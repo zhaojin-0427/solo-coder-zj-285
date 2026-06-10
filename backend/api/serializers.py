@@ -2,7 +2,8 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import (
     UserProfile, CaregiverProfile, Pet, FosterRequest,
-    Order, DailyRecord, Review, OrderChange, Dispute, DisputeMessage
+    Order, DailyRecord, Review, OrderChange, Dispute, DisputeMessage,
+    Handover
 )
 
 
@@ -61,6 +62,9 @@ class OrderSerializer(serializers.ModelSerializer):
     foster_request_info = FosterRequestSerializer(source='foster_request', read_only=True)
     transport_display = serializers.CharField(source='get_transport_display', read_only=True)
     has_open_dispute = serializers.SerializerMethodField()
+    handovers = serializers.SerializerMethodField()
+    latest_start_handover = serializers.SerializerMethodField()
+    can_start_service = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -68,6 +72,23 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_has_open_dispute(self, obj):
         return obj.disputes.filter(status='open').exists()
+
+    def get_handovers(self, obj):
+        from .models import Handover
+        handovers = obj.handovers.all()
+        return HandoverSerializer(handovers, many=True).data
+
+    def get_latest_start_handover(self, obj):
+        from .models import Handover
+        handover = obj.handovers.filter(stage='start').order_by('-created_at').first()
+        return HandoverSerializer(handover).data if handover else None
+
+    def get_can_start_service(self, obj):
+        from .models import Handover
+        if obj.status == 'pending':
+            start_handover = obj.handovers.filter(stage='start', status='confirmed').first()
+            return start_handover is not None
+        return False
 
 
 class DailyRecordSerializer(serializers.ModelSerializer):
@@ -122,4 +143,22 @@ class DisputeSerializer(serializers.ModelSerializer):
         model = Dispute
         fields = '__all__'
         read_only_fields = ['initiator', 'status', 'opened_at', 'escalation_alert_sent']
+
+
+class HandoverSerializer(serializers.ModelSerializer):
+    order_info = OrderSerializer(source='order', read_only=True)
+    stage_display = serializers.CharField(source='get_stage_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
+    related_dispute_info = DisputeSerializer(source='related_dispute', read_only=True, allow_null=True)
+    is_editable = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = Handover
+        fields = '__all__'
+        read_only_fields = [
+            'status', 'owner_confirmed', 'caregiver_confirmed',
+            'owner_confirmed_at', 'caregiver_confirmed_at', 'confirmed_at',
+            'created_by', 'related_dispute', 'has_discrepancies'
+        ]
 

@@ -294,3 +294,58 @@ class DisputeMessage(models.Model):
     def __str__(self):
         return f'消息 #{self.id} - 争议{self.dispute.id}'
 
+
+class Handover(models.Model):
+    STAGE_CHOICES = [
+        ('start', '开始服务交接'),
+        ('end', '结束服务交接'),
+    ]
+    STATUS_CHOICES = [
+        ('draft', '草稿'),
+        ('pending_owner_confirm', '待主人确认'),
+        ('pending_caregiver_confirm', '待代养人确认'),
+        ('confirmed', '已确认'),
+        ('disputed', '有争议'),
+    ]
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='handovers')
+    stage = models.CharField(max_length=20, choices=STAGE_CHOICES, default='start')
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='draft')
+
+    items = models.JSONField(default=list, help_text='宠物随身物品清单，如：[{"name": "狗粮", "quantity": "2kg"}]')
+    feeding_instructions = models.TextField(blank=True, help_text='喂养/用药说明')
+    health_notes = models.TextField(blank=True, help_text='健康异常备注')
+    location = models.CharField(max_length=255, blank=True, help_text='接送地点')
+    photos = models.JSONField(default=list, help_text='交接照片URL列表')
+    expected_time = models.DateTimeField(null=True, blank=True, help_text='预计交接时间')
+
+    actual_items = models.JSONField(default=list, blank=True, help_text='代养人实际接收物品')
+    actual_notes = models.TextField(blank=True, help_text='代养人补充说明')
+    discrepancies = models.JSONField(default=list, blank=True, help_text='差异项列表，如：[{"field": "items", "description": "缺少狗粮1袋"}]')
+    has_discrepancies = models.BooleanField(default=False, help_text='是否存在差异或健康异常')
+
+    related_dispute = models.ForeignKey(
+        Dispute, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='handovers'
+    )
+
+    owner_confirmed = models.BooleanField(default=False)
+    caregiver_confirmed = models.BooleanField(default=False)
+    owner_confirmed_at = models.DateTimeField(null=True, blank=True)
+    caregiver_confirmed_at = models.DateTimeField(null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='handovers_created')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'交接 #{self.id} - 订单{self.order.id} ({self.get_stage_display()})'
+
+    @property
+    def is_editable(self):
+        return self.status != 'confirmed'
+

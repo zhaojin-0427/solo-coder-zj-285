@@ -15,13 +15,14 @@ import math
 
 from .models import (
     UserProfile, CaregiverProfile, Pet, FosterRequest,
-    Order, DailyRecord, Review, OrderChange, Dispute, DisputeMessage
+    Order, DailyRecord, Review, OrderChange, Dispute, DisputeMessage,
+    Handover
 )
 from .serializers import (
     UserSerializer, UserProfileSerializer, CaregiverProfileSerializer,
     PetSerializer, FosterRequestSerializer, OrderSerializer,
     DailyRecordSerializer, ReviewSerializer, OrderChangeSerializer,
-    DisputeSerializer, DisputeMessageSerializer
+    DisputeSerializer, DisputeMessageSerializer, HandoverSerializer
 )
 
 
@@ -193,6 +194,17 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
         order = self.get_object()
+        if order.status != 'pending':
+            return Response(
+                {'success': False, 'error': '只有待确认状态的订单可以开始服务'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        confirmed_handover = order.handovers.filter(stage='start', status='confirmed').first()
+        if not confirmed_handover:
+            return Response(
+                {'success': False, 'error': '请先完成交接确认后再开始服务'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         order.status = 'active'
         order.save()
         return Response(OrderSerializer(order).data)
@@ -762,6 +774,18 @@ class StatisticsView(APIView):
         escalated_resolved = escalated_disputes.filter(status__in=['resolved', 'closed']).count()
         escalation_resolution_rate = round(escalated_resolved / escalated_count * 100, 2) if escalated_count > 0 else 0
 
+        handovers_qs = Handover.objects.all()
+        if district:
+            handovers_qs = handovers_qs.filter(order__foster_request__district=district)
+
+        total_handovers = handovers_qs.count()
+        confirmed_handovers = handovers_qs.filter(status='confirmed').count()
+        disputed_handovers = handovers_qs.filter(status='disputed').count()
+        handover_discrepancy_count = handovers_qs.filter(has_discrepancies=True).count()
+        handover_discrepancy_rate = round(
+            handover_discrepancy_count / total_handovers * 100, 2
+        ) if total_handovers > 0 else 0
+
         return Response({
             'overview': {
                 'total_orders': total_orders,
@@ -782,6 +806,11 @@ class StatisticsView(APIView):
                 'escalation_resolution_rate': escalation_resolution_rate,
                 'escalated_count': escalated_count,
                 'escalated_resolved': escalated_resolved,
+                'total_handovers': total_handovers,
+                'confirmed_handovers': confirmed_handovers,
+                'disputed_handovers': disputed_handovers,
+                'handover_discrepancy_rate': handover_discrepancy_rate,
+                'handover_discrepancy_count': handover_discrepancy_count,
             },
             'district_activity': district_activity,
             'district_orders': district_orders,
@@ -791,3 +820,227 @@ class StatisticsView(APIView):
             'avg_reviews': avg_reviews,
             'current_district': district,
         })
+
+
+class HandoverViewSet(viewsets.ModelViewSet):
+    queryset = Handover.objects.all()
+    serializer_class = HandoverSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['order', 'stage', 'status', 'has_discrepancies']
+
+    def create(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        order_id = request.data.get('order')
+        stage = request.data.get('stage', 'start')
+        try:
+            order = Order.objects.get(id=order_id)
+        except Order.DoesNotExist:
+            return Response(
+                {'success': False, 'error': '订单不存在'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if order.status == 'completed' or order.status == 'cancelled':
+            return Response(
+                {'success': False, 'error': '已完成或已取消的订单不可创建交接清单'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if order.owner_id != request.user.id and order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单相关方可以创建交接清单'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if order.owner_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有宠物主人可以发起交接清单'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        pending_exists = Handover.objects.filter(
+            order=order, stage=stage
+        ).exclude(status__in=['confirmed', 'disputed']).exists()
+        if pending_exists:
+            return Response(
+                {'success': False, 'error': '该订单已有未完成的交接清单，请先处理'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        data = request.data.copy()
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        handover = serializer.save(
+            created_by=request.user,
+            status='draft'
+        )
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    def update(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        handover = self.get_object()
+        if handover.status == 'confirmed':
+            return Response(
+                {'success': False, 'error': '已确认的交接清单不可编辑'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        order = handover.order
+        if order.owner_id != request.user.id and order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单相关方可以编辑交接清单'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        partial = kwargs.pop('partial', False)
+        serializer = self.get_serializer(handover, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def submit_for_confirmation(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        handover = self.get_object()
+        order = handover.order
+
+        if order.owner_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有宠物主人可以提交交接清单'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if handover.status not in ['draft', 'pending_owner_confirm']:
+            return Response(
+                {'success': False, 'error': '当前状态不可提交确认'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        handover.status = 'pending_caregiver_confirm'
+        handover.save()
+        return Response({'success': True, 'handover': HandoverSerializer(handover).data})
+
+    @action(detail=True, methods=['post'])
+    def caregiver_confirm(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        handover = self.get_object()
+        order = handover.order
+
+        if order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有代养人可以确认交接清单'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if handover.status != 'pending_caregiver_confirm':
+            return Response(
+                {'success': False, 'error': '当前状态不可确认'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        actual_items = request.data.get('actual_items')
+        actual_notes = request.data.get('actual_notes', '')
+        discrepancies = request.data.get('discrepancies', [])
+        has_discrepancies = request.data.get('has_discrepancies', False)
+
+        if actual_items is not None:
+            handover.actual_items = actual_items
+        if actual_notes:
+            handover.actual_notes = actual_notes
+        if discrepancies:
+            handover.discrepancies = discrepancies
+        handover.has_discrepancies = bool(has_discrepancies or discrepancies or (handover.health_notes and len(handover.health_notes.strip()) > 0))
+
+        handover.caregiver_confirmed = True
+        handover.caregiver_confirmed_at = timezone.now()
+
+        if handover.has_discrepancies:
+            handover.status = 'disputed'
+            handover.save()
+
+            dispute = Dispute.objects.create(
+                order=order,
+                initiator=request.user,
+                status='open',
+                trigger_type='manual',
+                title=f'交接差异 - 订单 #{order.id}',
+                description=f'代养人在交接确认时标记了差异或健康异常。\n\n差异项：\n' + 
+                    '\n'.join([f"- {d.get('field', '')}: {d.get('description', '')}" for d in handover.discrepancies]) if handover.discrepancies else
+                    (f'健康异常备注：{handover.health_notes}' if handover.health_notes else '存在交接差异'),
+                escalation_alert_sent=False,
+            )
+            handover.related_dispute = dispute
+            handover.save()
+
+            DisputeMessage.objects.create(
+                dispute=dispute,
+                sender=request.user,
+                sender_role='caregiver',
+                content=f'交接确认时标记差异。{actual_notes}',
+                is_system=False,
+            )
+            order.status = 'disputed'
+            order.save()
+
+            return Response({
+                'success': True,
+                'dispute_created': True,
+                'handover': HandoverSerializer(handover).data,
+                'dispute': DisputeSerializer(dispute).data,
+            })
+        else:
+            handover.status = 'pending_owner_confirm'
+            handover.save()
+            return Response({'success': True, 'handover': HandoverSerializer(handover).data})
+
+    @action(detail=True, methods=['post'])
+    def owner_final_confirm(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        handover = self.get_object()
+        order = handover.order
+
+        if order.owner_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有宠物主人可以最终确认交接'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        if handover.status != 'pending_owner_confirm':
+            return Response(
+                {'success': False, 'error': '当前状态不可确认'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        handover.owner_confirmed = True
+        handover.owner_confirmed_at = timezone.now()
+        handover.status = 'confirmed'
+        handover.confirmed_at = timezone.now()
+        handover.save()
+
+        return Response({'success': True, 'handover': HandoverSerializer(handover).data})

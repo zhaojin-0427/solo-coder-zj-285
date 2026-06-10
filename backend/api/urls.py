@@ -13,6 +13,7 @@ router.register(r'daily-records', views.DailyRecordViewSet)
 router.register(r'reviews', views.ReviewViewSet)
 router.register(r'order-changes', views.OrderChangeViewSet)
 router.register(r'disputes', views.DisputeViewSet)
+router.register(r'handovers', views.HandoverViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),
