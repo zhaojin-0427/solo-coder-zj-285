@@ -11,13 +11,14 @@ import {
   SyncOutlined, ClockCircleOutlined, SolutionOutlined,
   WarningOutlined, CloseCircleOutlined, MessageOutlined,
   CarryOutOutlined, FileTextOutlined, SwapOutlined,
-  MinusCircleOutlined,
+  MinusCircleOutlined, PayCircleOutlined, DollarOutlined,
+  BankOutlined, RollbackOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
-import { orderApi, dailyRecordApi, reviewApi, orderChangeApi, disputeApi, handoverApi } from '../api';
+import { orderApi, dailyRecordApi, reviewApi, orderChangeApi, disputeApi, handoverApi, refundApi } from '../api';
 import { useAuth } from '../context/AuthContext';
-import type { Order, DailyRecord, Review, OrderChange as OrderChangeType, Dispute, DisputeMessage, Handover, HandoverItem, HandoverDiscrepancy } from '../types';
+import type { Order, DailyRecord, Review, OrderChange as OrderChangeType, Dispute, DisputeMessage, Handover, HandoverItem, HandoverDiscrepancy, Escrow, RefundRequest, EscrowInfo } from '../types';
 
 const { TabPane } = Tabs;
 const { TextArea } = Input;
@@ -71,6 +72,21 @@ const handoverStatusMap: Record<string, { color: string; label: string }> = {
 const handoverStageMap: Record<string, { color: string; label: string }> = {
   start: { color: 'green', label: '开始服务交接' },
   end: { color: 'orange', label: '结束服务交接' },
+};
+
+const escrowStatusMap: Record<string, { color: string; label: string }> = {
+  unpaid: { color: 'default', label: '待支付' },
+  held: { color: 'blue', label: '托管中' },
+  settled: { color: 'green', label: '已结算' },
+  refunded: { color: 'red', label: '已退款' },
+  partially_refunded: { color: 'orange', label: '部分退款' },
+};
+
+const refundStatusMap: Record<string, { color: string; label: string }> = {
+  pending: { color: 'orange', label: '待处理' },
+  approved: { color: 'green', label: '已同意' },
+  rejected: { color: 'red', label: '已拒绝' },
+  cancelled: { color: 'default', label: '已取消' },
 };
 
 const transportOptions = [
@@ -128,6 +144,10 @@ const Orders: React.FC = () => {
   const [actualItems, setActualItems] = useState<HandoverItem[]>([]);
   const [discrepancies, setDiscrepancies] = useState<HandoverDiscrepancy[]>([]);
 
+  const [orderRefunds, setOrderRefunds] = useState<RefundRequest[]>([]);
+  const [refundModal, setRefundModal] = useState(false);
+  const [refundForm] = Form.useForm();
+
   useEffect(() => {
     loadOrders();
   }, [activeTab]);
@@ -154,12 +174,13 @@ const Orders: React.FC = () => {
     setDetailOrder(order);
     setDetailModal(true);
     try {
-      const [r, rv, ch, dp, hd] = await Promise.all([
+      const [r, rv, ch, dp, hd, rf] = await Promise.all([
         dailyRecordApi.list({ order: order.id }),
         reviewApi.list({ order: order.id }),
         orderChangeApi.list({ order: order.id }),
         disputeApi.list({ order: order.id }),
         handoverApi.list({ order: order.id }),
+        refundApi.list({ order: order.id }),
       ]);
       setDailyRecords(Array.isArray(r.data) ? r.data : (r.data as any).results || []);
       setOrderReviews(Array.isArray(rv.data) ? rv.data : (rv.data as any).results || []);
@@ -167,6 +188,7 @@ const Orders: React.FC = () => {
       const disputes = Array.isArray(dp.data) ? dp.data : (dp.data as any).results || [];
       setOrderDisputes(disputes);
       setOrderHandovers(Array.isArray(hd.data) ? hd.data : (hd.data as any).results || []);
+      setOrderRefunds(Array.isArray(rf.data) ? rf.data : (rf.data as any).results || []);
       if (disputes.length > 0) {
         const openDispute = disputes.find((d: Dispute) => d.status === 'open');
         if (openDispute) {
@@ -646,6 +668,144 @@ const Orders: React.FC = () => {
     });
   };
 
+  const handlePayEscrow = async (order: Order) => {
+    modal.confirm({
+      title: '确认支付托管金额',
+      content: (
+        <div>
+          <p>即将支付托管金额：<strong style={{ color: '#52c41a' }}>¥{order.total_price}</strong></p>
+          <p style={{ color: '#6b7280', fontSize: 12 }}>
+            包含：平台服务费 10%，剩余部分将在服务完成并评价后结算给代养人。
+          </p>
+        </div>
+      ),
+      onOk: async () => {
+        try {
+          await orderApi.payEscrow(order.id);
+          message.success('托管支付成功');
+          if (detailOrder?.id === order.id) {
+            openDetail(order);
+          }
+          loadOrders();
+        } catch (e: any) {
+          message.error(e?.response?.data?.error || '支付失败');
+        }
+      },
+    });
+  };
+
+  const handleSettle = async (order: Order) => {
+    try {
+      const res = await orderApi.settle(order.id);
+      if (res.data.success) {
+        message.success('结算成功');
+        if (detailOrder?.id === order.id) {
+          openDetail(order);
+        }
+        loadOrders();
+      }
+    } catch (e: any) {
+      const blocked = e?.response?.data?.blocked_reasons;
+      if (blocked && blocked.length > 0) {
+        message.error('无法结算：' + blocked.join('；'));
+      } else {
+        message.error(e?.response?.data?.error || '结算失败');
+      }
+    }
+  };
+
+  const openRefundModal = (order: Order) => {
+    setCurrentOrder(order);
+    refundForm.resetFields();
+    refundForm.setFieldsValue({ amount: 0 });
+    setRefundModal(true);
+  };
+
+  const submitRefund = async () => {
+    try {
+      const values = await refundForm.validateFields();
+      await refundApi.create({
+        order: currentOrder!.id,
+        amount: values.amount,
+        reason: values.reason,
+      });
+      message.success('退款申请已提交，等待代养人确认');
+      setRefundModal(false);
+      if (detailOrder?.id === currentOrder?.id) {
+        openDetail(currentOrder!);
+      }
+      loadOrders();
+    } catch (e: any) {
+      message.error(e?.response?.data?.error || '提交失败');
+    }
+  };
+
+  const handleApproveRefund = async (refund: RefundRequest) => {
+    modal.confirm({
+      title: '确认同意退款',
+      content: (
+        <div>
+          <p>退款金额：<strong style={{ color: '#ef4444' }}>¥{refund.amount}</strong></p>
+          <p>退款原因：{refund.reason}</p>
+        </div>
+      ),
+      onOk: async () => {
+        try {
+          await refundApi.approve(refund.id);
+          message.success('已同意退款');
+          if (detailOrder) {
+            openDetail(detailOrder);
+          }
+          loadOrders();
+        } catch (e: any) {
+          message.error(e?.response?.data?.error || '操作失败');
+        }
+      },
+    });
+  };
+
+  const handleRejectRefund = async (refund: RefundRequest) => {
+    modal.confirm({
+      title: '拒绝退款申请',
+      content: (
+        <div>
+          <Input.TextArea
+            id="reject_refund_reason"
+            rows={3}
+            placeholder="请输入拒绝原因"
+            maxLength={200}
+          />
+        </div>
+      ),
+      onOk: async () => {
+        try {
+          const input = document.getElementById('reject_refund_reason') as HTMLTextAreaElement;
+          const reason = input?.value || '';
+          await refundApi.reject(refund.id, reason);
+          message.success('已拒绝退款申请');
+          if (detailOrder) {
+            openDetail(detailOrder);
+          }
+          loadOrders();
+        } catch (e: any) {
+          message.error(e?.response?.data?.error || '操作失败');
+        }
+      },
+    });
+  };
+
+  const handleCancelRefund = async (refund: RefundRequest) => {
+    try {
+      await refundApi.cancel(refund.id);
+      message.success('已取消退款申请');
+      if (detailOrder) {
+        openDetail(detailOrder);
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.error || '操作失败');
+    }
+  };
+
   const getStartHandover = () => {
     return orderHandovers.find(h => h.stage === 'start');
   };
@@ -681,6 +841,9 @@ const Orders: React.FC = () => {
             const days = totalDays(order);
             const progress = Math.min(100, Math.round(dailyRecords.filter(r => r.order === order.id).length / days * 100));
             const pendingChanges = orderChanges.filter(c => c.order === order.id && c.status === 'pending');
+            const escrowInfo = order.escrow_info;
+            const escrowSt = escrowInfo ? escrowStatusMap[escrowInfo.status] : null;
+            const settlementBlocked = order.settlement_blocked_reasons && order.settlement_blocked_reasons.length > 0;
             return (
               <Card
                 style={{ marginBottom: 16, borderRadius: 12 }}
@@ -702,11 +865,29 @@ const Orders: React.FC = () => {
                     style={{ marginBottom: 16 }}
                   />
                 )}
+                {settlementBlocked && (
+                  <Alert
+                    message={<div>
+                      <strong>⛔ 暂无法结算：</strong>
+                      <ul style={{ margin: '4px 0 0 18px', padding: 0 }}>
+                        {order.settlement_blocked_reasons!.map((r, i) => <li key={i}>{r}</li>)}
+                      </ul>
+                    </div>}
+                    type="error"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                  />
+                )}
                 <Row gutter={16} align="middle">
                   <Col xs={24} md={8}>
-                    <Space style={{ marginBottom: 12 }}>
+                    <Space style={{ marginBottom: 12 }} wrap>
                       <span style={{ fontSize: 16, fontWeight: 600 }}>订单 #{order.id}</span>
                       <Tag color={st.color} style={{ fontSize: 13 }}>{st.label}</Tag>
+                      {escrowSt && (
+                        <Tag icon={<BankOutlined />} color={escrowSt.color} style={{ fontSize: 13 }}>
+                          {escrowSt.label}
+                        </Tag>
+                      )}
                     </Space>
                     <div style={{ marginBottom: 8 }}>
                       <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 4 }}>
@@ -758,6 +939,11 @@ const Orders: React.FC = () => {
                       <Button type="primary" block onClick={() => openDetail(order)}>
                         查看详情
                       </Button>
+                      {order.status === 'pending' && isOwner && escrowInfo?.status === 'unpaid' && (
+                        <Button block type="primary" icon={<PayCircleOutlined />} style={{ background: '#faad14', borderColor: '#faad14' }} onClick={() => handlePayEscrow(order)}>
+                          支付托管金额
+                        </Button>
+                      )}
                       {(order.status === 'pending' || order.status === 'active') && isOwner && (
                         <Button block icon={<FileTextOutlined />} onClick={() => openCreateHandover(order)}>
                           {order.latest_start_handover ? '编辑交接清单' : '发起交接清单'}
@@ -778,6 +964,11 @@ const Orders: React.FC = () => {
                           登记今日情况
                         </Button>
                       )}
+                      {escrowInfo?.status === 'held' && isOwner && order.status !== 'cancelled' && (
+                        <Button block icon={<RollbackOutlined />} onClick={() => openRefundModal(order)}>
+                          申请退款
+                        </Button>
+                      )}
                       {(order.status === 'pending' || order.status === 'active') && (
                         <Button block icon={<WarningOutlined />} danger onClick={() => openDisputeModal(order)}>
                           发起争议
@@ -786,6 +977,11 @@ const Orders: React.FC = () => {
                       {order.status === 'active' && !order.has_open_dispute && (
                         <Button block type="default" onClick={() => handleComplete(order)}>
                           完成订单
+                        </Button>
+                      )}
+                      {order.can_settle && (
+                        <Button block type="primary" icon={<DollarOutlined />} style={{ background: '#52c41a', borderColor: '#52c41a' }} onClick={() => handleSettle(order)}>
+                          结算托管金额
                         </Button>
                       )}
                       {order.status === 'completed' && isOwner && !order.owner_reviewed && (
@@ -1035,6 +1231,22 @@ const Orders: React.FC = () => {
                   ? detailOrder.services.map((s: string) => <Tag key={s}>{s}</Tag>)
                   : '暂无'}
               </Descriptions.Item>
+              {detailOrder.escrow_info && (
+                <>
+                  <Descriptions.Item label="托管状态">
+                    <Tag icon={<BankOutlined />} color={escrowStatusMap[detailOrder.escrow_info.status].color}>
+                      {escrowStatusMap[detailOrder.escrow_info.status].label}
+                    </Tag>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="结算状态">
+                    {detailOrder.can_settle ? (
+                      <Tag color="green" icon={<CheckCircleOutlined />}>可结算</Tag>
+                    ) : (
+                      <Tag color="orange" icon={<WarningOutlined />}>暂不可结算</Tag>
+                    )}
+                  </Descriptions.Item>
+                </>
+              )}
               <Descriptions.Item label="宠物信息" span={2}>
                 {detailOrder.foster_request_info?.pet_info?.name} -
                 {detailOrder.foster_request_info?.pet_info?.breed}
@@ -1042,6 +1254,15 @@ const Orders: React.FC = () => {
               <Descriptions.Item label="需求描述" span={2}>
                 {detailOrder.foster_request_info?.description}
               </Descriptions.Item>
+              {detailOrder.settlement_blocked_reasons && detailOrder.settlement_blocked_reasons.length > 0 && (
+                <Descriptions.Item label="⛔ 结算阻止原因" span={2}>
+                  <div style={{ color: '#dc2626' }}>
+                    {detailOrder.settlement_blocked_reasons.map((r, i) => (
+                      <div key={i}>• {r}</div>
+                    ))}
+                  </div>
+                </Descriptions.Item>
+              )}
             </Descriptions>
 
             <Tabs defaultActiveKey="records">
@@ -1484,6 +1705,147 @@ const Orders: React.FC = () => {
                   />
                 )}
               </TabPane>
+
+              <TabPane tab={<span><BankOutlined />费用托管</span>} key="escrow">
+                {!detailOrder.escrow_info ? (
+                  <Empty description="暂无托管信息" />
+                ) : (
+                  <div>
+                    <Card style={{ marginBottom: 16, borderRadius: 8 }}>
+                      <Descriptions column={2} bordered size="small">
+                        <Descriptions.Item label="托管状态">
+                          <Tag color={escrowStatusMap[detailOrder.escrow_info.status].color}>
+                            {escrowStatusMap[detailOrder.escrow_info.status].label}
+                          </Tag>
+                        </Descriptions.Item>
+                        <Descriptions.Item label="托管总额">
+                          <strong style={{ color: '#52c41a' }}>¥{detailOrder.escrow_info.total_amount}</strong>
+                        </Descriptions.Item>
+                        <Descriptions.Item label="平台服务费 (10%)">
+                          <span style={{ color: '#f97316' }}>¥{detailOrder.escrow_info.platform_fee}</span>
+                        </Descriptions.Item>
+                        <Descriptions.Item label="代养人应收">
+                          <strong style={{ color: '#1677ff' }}>¥{detailOrder.escrow_info.caregiver_amount}</strong>
+                        </Descriptions.Item>
+                        <Descriptions.Item label="已退款金额">
+                          <span style={{ color: '#ef4444' }}>¥{detailOrder.escrow_info.refund_amount}</span>
+                        </Descriptions.Item>
+                        <Descriptions.Item label="支付时间">
+                          {detailOrder.escrow_info.paid_at ? dayjs(detailOrder.escrow_info.paid_at).format('YYYY-MM-DD HH:mm') : '未支付'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label="结算时间">
+                          {detailOrder.escrow_info.settled_at ? dayjs(detailOrder.escrow_info.settled_at).format('YYYY-MM-DD HH:mm') : '未结算'}
+                        </Descriptions.Item>
+                        <Descriptions.Item label="退款时间">
+                          {detailOrder.escrow_info.refunded_at ? dayjs(detailOrder.escrow_info.refunded_at).format('YYYY-MM-DD HH:mm') : '无'}
+                        </Descriptions.Item>
+                      </Descriptions>
+                    </Card>
+
+                    {detailOrder.escrow_info.status === 'unpaid' && detailOrder.owner === user?.id && (
+                      <Button type="primary" icon={<PayCircleOutlined />} size="large" block
+                        onClick={() => handlePayEscrow(detailOrder)}
+                        style={{ background: '#faad14', borderColor: '#faad14' }}>
+                        支付托管金额 ¥{detailOrder.escrow_info.total_amount}
+                      </Button>
+                    )}
+
+                    {detailOrder.can_settle && (
+                      <Button type="primary" icon={<DollarOutlined />} size="large" block
+                        onClick={() => handleSettle(detailOrder)}
+                        style={{ background: '#52c41a', borderColor: '#52c41a' }}>
+                        结算给代养人 ¥{detailOrder.escrow_info.caregiver_amount}
+                      </Button>
+                    )}
+
+                    {detailOrder.settlement_blocked_reasons && detailOrder.settlement_blocked_reasons.length > 0 && (
+                      <Alert
+                        type="warning"
+                        showIcon
+                        style={{ marginTop: 16 }}
+                        message={
+                          <div>
+                            <strong>⚠️ 托管资金暂无法结算，原因如下：</strong>
+                            <ul style={{ margin: '8px 0 0 20px', padding: 0 }}>
+                              {detailOrder.settlement_blocked_reasons.map((r, i) => (
+                                <li key={i}>{r}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        }
+                      />
+                    )}
+                  </div>
+                )}
+              </TabPane>
+
+              <TabPane tab={<span><RollbackOutlined />退款申请</span>} key="refunds">
+                <div style={{ marginBottom: 16 }}>
+                  {detailOrder.escrow_info?.status === 'held' && detailOrder.owner === user?.id && (
+                    <Button type="primary" icon={<RollbackOutlined />} onClick={() => openRefundModal(detailOrder)}>
+                      申请退款
+                    </Button>
+                  )}
+                </div>
+                {orderRefunds.length === 0 ? (
+                  <Empty description="暂无退款申请" />
+                ) : (
+                  <List
+                    dataSource={orderRefunds.sort((a, b) => dayjs(b.created_at).unix() - dayjs(a.created_at).unix())}
+                    renderItem={(refund) => {
+                      const rs = refundStatusMap[refund.status];
+                      const isInitiator = refund.initiator === user?.id;
+                      const isCaregiver = detailOrder.caregiver === user?.id;
+                      return (
+                        <List.Item>
+                          <Card style={{ width: '100%', borderRadius: 8 }}>
+                            <Space style={{ marginBottom: 12 }} wrap>
+                              <Tag color={rs.color}>{rs.label}</Tag>
+                              <span style={{ fontSize: 15, fontWeight: 600, color: '#ef4444' }}>
+                                退款 ¥{refund.amount}
+                              </span>
+                              <span style={{ color: '#6b7280', fontSize: 12 }}>
+                                申请人：{refund.initiator_name} · {dayjs(refund.created_at).format('YYYY-MM-DD HH:mm')}
+                              </span>
+                            </Space>
+                            <div style={{ color: '#4b5563', marginBottom: 12 }}>
+                              <strong>退款原因：</strong>{refund.reason}
+                            </div>
+                            {refund.reject_reason && (
+                              <Alert type="error" message={`拒绝原因：${refund.reject_reason}`} style={{ marginBottom: 12 }} />
+                            )}
+                            {refund.handled_at && (
+                              <div style={{ color: '#6b7280', fontSize: 12, marginBottom: 12 }}>
+                                处理时间：{dayjs(refund.handled_at).format('YYYY-MM-DD HH:mm')}
+                                {refund.handled_by_name && ` · 处理人：${refund.handled_by_name}`}
+                              </div>
+                            )}
+                            {refund.status === 'pending' && (
+                              <Space>
+                                {isCaregiver && (
+                                  <>
+                                    <Button type="primary" onClick={() => handleApproveRefund(refund)}>
+                                      同意退款
+                                    </Button>
+                                    <Button danger onClick={() => handleRejectRefund(refund)}>
+                                      拒绝退款
+                                    </Button>
+                                  </>
+                                )}
+                                {isInitiator && (
+                                  <Button onClick={() => handleCancelRefund(refund)}>
+                                    取消申请
+                                  </Button>
+                                )}
+                              </Space>
+                            )}
+                          </Card>
+                        </List.Item>
+                      );
+                    }}
+                  />
+                )}
+              </TabPane>
             </Tabs>
           </div>
         )}
@@ -1718,6 +2080,67 @@ const Orders: React.FC = () => {
               />
             </Form>
           </div>
+        )}
+      </Modal>
+
+      {/* 退款申请 Modal */}
+      <Modal
+        title={<span><RollbackOutlined /> 申请退款</span>}
+        open={refundModal}
+        onOk={submitRefund}
+        onCancel={() => setRefundModal(false)}
+        okText="提交退款申请"
+        cancelText="取消"
+        width={500}
+      >
+        {currentOrder && (
+          <Form form={refundForm} layout="vertical">
+            <Alert
+              message="退款申请需要代养人确认后方可生效"
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+            <Form.Item
+              label="退款金额（元）"
+              name="amount"
+              rules={[
+                { required: true, message: '请输入退款金额' },
+                {
+                  validator: (_, value) => {
+                    if (value <= 0) return Promise.reject('退款金额必须大于 0');
+                    if (value > (currentOrder.escrow_info?.total_amount || currentOrder.total_price)) {
+                      return Promise.reject('退款金额不能超过托管总额');
+                    }
+                    return Promise.resolve();
+                  },
+                },
+              ]}
+            >
+              <InputNumber
+                style={{ width: '100%' }}
+                min={0}
+                max={currentOrder.escrow_info?.total_amount || currentOrder.total_price}
+                step={1}
+                placeholder="请输入退款金额"
+              />
+            </Form.Item>
+            <div style={{ color: '#6b7280', fontSize: 12, marginBottom: 16 }}>
+              托管总额：¥{currentOrder.escrow_info?.total_amount || currentOrder.total_price}
+            </div>
+            <Form.Item
+              label="退款原因"
+              name="reason"
+              rules={[{ required: true, message: '请填写退款原因' }]}
+            >
+              <Input.TextArea
+                rows={4}
+                placeholder="请详细说明退款原因..."
+                maxLength={500}
+                showCount
+              />
+            </Form.Item>
+          </Form>
         )}
       </Modal>
     </div>

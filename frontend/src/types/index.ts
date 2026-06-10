@@ -126,6 +126,59 @@ export interface Handover {
   is_editable: boolean;
 }
 
+export interface Escrow {
+  id: number;
+  order: number;
+  order_info?: Order;
+  total_amount: number;
+  platform_fee: number;
+  caregiver_amount: number;
+  refund_amount: number;
+  status: 'unpaid' | 'held' | 'settled' | 'refunded' | 'partially_refunded';
+  status_display?: string;
+  paid_at?: string;
+  settled_at?: string;
+  refunded_at?: string;
+  settlement_notes?: string;
+  can_settle?: boolean;
+  settlement_blocked_reasons?: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RefundRequest {
+  id: number;
+  order: number;
+  order_info?: Order;
+  escrow: number;
+  escrow_info?: Escrow;
+  initiator: number;
+  initiator_name: string;
+  amount: number;
+  reason: string;
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+  status_display: string;
+  handled_by?: number;
+  handled_by_name?: string;
+  handled_at?: string;
+  reject_reason?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EscrowInfo {
+  id: number;
+  status: string;
+  status_display: string;
+  total_amount: number;
+  platform_fee: number;
+  caregiver_amount: number;
+  refund_amount: number;
+  paid_at?: string;
+  settled_at?: string;
+  refunded_at?: string;
+}
+
 export interface Order {
   id: number;
   foster_request: number;
@@ -147,6 +200,11 @@ export interface Order {
   handovers?: Handover[];
   latest_start_handover?: Handover | null;
   can_start_service?: boolean;
+  escrow?: Escrow;
+  escrow_info?: EscrowInfo;
+  can_settle?: boolean;
+  settlement_blocked_reasons?: string[];
+  refund_requests?: RefundRequest[];
   created_at: string;
   updated_at: string;
 }
@@ -247,6 +305,13 @@ export interface Review {
   created_at: string;
 }
 
+export interface EscrowByStatus {
+  status: string;
+  status_key: string;
+  count: number;
+  amount: number;
+}
+
 export interface Statistics {
   overview: {
     total_orders: number;
@@ -272,6 +337,19 @@ export interface Statistics {
     disputed_handovers: number;
     handover_discrepancy_count: number;
     handover_discrepancy_rate: number;
+    total_escrow_amount: number;
+    total_escrows: number;
+    total_platform_fee: number;
+    settled_amount: number;
+    settled_count: number;
+    pending_amount: number;
+    pending_count: number;
+    total_refund_amount: number;
+    refunded_count: number;
+    refund_rate: number;
+    refund_approval_rate: number;
+    total_refund_requests: number;
+    approved_refunds: number;
   };
   district_activity: { district: string; count: number }[];
   district_orders: { district: string; total: number; completed: number }[];
@@ -286,5 +364,6 @@ export interface Statistics {
   abnormal_by_type: { order_pet_type: string; count: number }[];
   order_trend: { date: string; count: number }[];
   avg_reviews: { role: string; avg_rating: number; count: number }[];
+  escrow_by_status: EscrowByStatus[];
   current_district?: string;
 }

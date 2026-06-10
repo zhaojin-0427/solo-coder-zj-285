@@ -2,7 +2,7 @@ import axios from 'axios';
 import type {
   User, UserProfile, CaregiverProfile, Pet, FosterRequest,
   Order, DailyRecord, Review, Statistics, OrderChange, Dispute, DisputeMessage,
-  Handover
+  Handover, Escrow, RefundRequest
 } from '../types';
 
 const api = axios.create({
@@ -58,6 +58,15 @@ export const orderApi = {
   get: (id: number) => api.get<Order>(`/orders/${id}/`),
   start: (id: number) => api.post<Order>(`/orders/${id}/start/`),
   complete: (id: number) => api.post<Order>(`/orders/${id}/complete/`),
+  payEscrow: (id: number) =>
+    api.post<{ success: boolean; escrow: Escrow; order: Order }>(`/orders/${id}/pay_escrow/`),
+  settle: (id: number) =>
+    api.post<{ success: boolean; escrow: Escrow; order: Order; blocked_reasons?: string[] }>(`/orders/${id}/settle/`),
+  escrowDetail: (id: number) => api.get<Escrow>(`/orders/${id}/escrow_detail/`),
+  caregiverPendingIncome: () =>
+    api.get<{ success: boolean; total_pending: number; count: number; escrows: Escrow[] }>(
+      '/orders/caregiver_pending_income/'
+    ),
 };
 
 export const dailyRecordApi = {
@@ -108,4 +117,24 @@ export const handoverApi = {
     ),
   ownerFinalConfirm: (id: number) =>
     api.post<{ success: boolean; handover: Handover }>(`/handovers/${id}/owner_final_confirm/`),
+};
+
+export const escrowApi = {
+  list: (params?: any) => api.get<Escrow[]>('/escrows/', { params }),
+  get: (id: number) => api.get<Escrow>(`/escrows/${id}/`),
+};
+
+export const refundApi = {
+  list: (params?: any) => api.get<RefundRequest[]>('/refund-requests/', { params }),
+  get: (id: number) => api.get<RefundRequest>(`/refund-requests/${id}/`),
+  create: (data: { order: number; amount: number; reason: string }) =>
+    api.post<RefundRequest>('/refund-requests/', data),
+  approve: (id: number) =>
+    api.post<{ success: boolean; refund: RefundRequest; escrow: Escrow }>(`/refund-requests/${id}/approve/`),
+  reject: (id: number, rejectReason: string) =>
+    api.post<{ success: boolean; refund: RefundRequest }>(`/refund-requests/${id}/reject/`, {
+      reject_reason: rejectReason,
+    }),
+  cancel: (id: number) =>
+    api.post<{ success: boolean; refund: RefundRequest }>(`/refund-requests/${id}/cancel/`),
 };

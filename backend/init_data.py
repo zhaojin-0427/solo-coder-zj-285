@@ -10,8 +10,9 @@ django.setup()
 from django.contrib.auth.models import User
 from api.models import (
     UserProfile, CaregiverProfile, Pet, FosterRequest,
-    Order, DailyRecord, Review
+    Order, DailyRecord, Review, Escrow, RefundRequest
 )
+from django.utils import timezone
 
 
 def init_data():
@@ -183,6 +184,51 @@ def init_data():
                         )
                         print(f'  → 订单 #{order.id}, 总价: ¥{total}, 状态: {order.get_status_display()}')
 
+                        platform_fee_rate = 0.1
+                        platform_fee = round(total * platform_fee_rate, 2)
+                        caregiver_amount = round(total - platform_fee, 2)
+
+                        if fr.status == 'completed':
+                            escrow_status = 'settled'
+                        elif fr.status == 'confirmed':
+                            escrow_status = random.choice(['held', 'held', 'unpaid'])
+                        else:
+                            escrow_status = 'unpaid'
+
+                        escrow, _ = Escrow.objects.get_or_create(
+                            order=order,
+                            defaults={
+                                'total_amount': total,
+                                'platform_fee': platform_fee,
+                                'caregiver_amount': caregiver_amount,
+                                'refund_amount': 0,
+                                'status': escrow_status,
+                                'paid_at': timezone.now() if escrow_status != 'unpaid' else None,
+                                'settled_at': timezone.now() if escrow_status == 'settled' else None,
+                            }
+                        )
+                        print(f'    → 托管 #{escrow.id}, 状态: {escrow.get_status_display()}, 平台费: ¥{escrow.platform_fee}, 代养人应收: ¥{escrow.caregiver_amount}')
+
+                        if escrow_status in ['held', 'settled'] and random.random() < 0.15:
+                            refund_amount = round(total * random.uniform(0.1, 0.5), 2)
+                            RefundRequest.objects.get_or_create(
+                                order=order,
+                                escrow=escrow,
+                                initiator=fr.owner,
+                                defaults={
+                                    'amount': refund_amount,
+                                    'reason': random.choice([
+                                        '服务未达到预期',
+                                        '提前结束服务',
+                                        '需要调整费用',
+                                    ]),
+                                    'status': random.choice(['approved', 'rejected', 'pending']),
+                                    'handled_by': order.caregiver,
+                                    'handled_at': timezone.now(),
+                                }
+                            )
+                            print(f'    → 退款申请: ¥{refund_amount}')
+
                         if order.status == 'completed':
                             for i in range(rd['days']):
                                 r_date = start + timedelta(days=i)
@@ -245,6 +291,10 @@ def init_data():
     print(f'订单总数: {Order.objects.count()}')
     print(f'每日记录总数: {DailyRecord.objects.count()}')
     print(f'评价总数: {Review.objects.count()}')
+    print(f'托管记录总数: {Escrow.objects.count()}')
+    print(f'  - 已托管金额: ¥{sum(float(e.total_amount) for e in Escrow.objects.all()):.2f}')
+    print(f'  - 已结算金额: ¥{sum(float(e.caregiver_amount) for e in Escrow.objects.filter(status="settled")):.2f}')
+    print(f'退款申请总数: {RefundRequest.objects.count()}')
     print('\n默认密码: 123456')
 
 

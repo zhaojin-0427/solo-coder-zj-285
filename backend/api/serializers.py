@@ -3,7 +3,7 @@ from django.contrib.auth.models import User
 from .models import (
     UserProfile, CaregiverProfile, Pet, FosterRequest,
     Order, DailyRecord, Review, OrderChange, Dispute, DisputeMessage,
-    Handover
+    Handover, Escrow, RefundRequest
 )
 
 
@@ -65,6 +65,11 @@ class OrderSerializer(serializers.ModelSerializer):
     handovers = serializers.SerializerMethodField()
     latest_start_handover = serializers.SerializerMethodField()
     can_start_service = serializers.SerializerMethodField()
+    escrow = serializers.SerializerMethodField()
+    escrow_info = serializers.SerializerMethodField()
+    can_settle = serializers.SerializerMethodField()
+    settlement_blocked_reasons = serializers.SerializerMethodField()
+    refund_requests = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -89,6 +94,44 @@ class OrderSerializer(serializers.ModelSerializer):
             start_handover = obj.handovers.filter(stage='start', status='confirmed').first()
             return start_handover is not None
         return False
+
+    def get_escrow(self, obj):
+        from .models import Escrow
+        escrow = getattr(obj, 'escrow', None)
+        return EscrowSerializer(escrow).data if escrow else None
+
+    def get_escrow_info(self, obj):
+        from .models import Escrow
+        escrow = getattr(obj, 'escrow', None)
+        if not escrow:
+            return None
+        return {
+            'id': escrow.id,
+            'status': escrow.status,
+            'status_display': escrow.get_status_display(),
+            'total_amount': float(escrow.total_amount),
+            'platform_fee': float(escrow.platform_fee),
+            'caregiver_amount': float(escrow.caregiver_amount),
+            'refund_amount': float(escrow.refund_amount),
+            'paid_at': escrow.paid_at.isoformat() if escrow.paid_at else None,
+            'settled_at': escrow.settled_at.isoformat() if escrow.settled_at else None,
+            'refunded_at': escrow.refunded_at.isoformat() if escrow.refunded_at else None,
+        }
+
+    def get_can_settle(self, obj):
+        from .models import Escrow
+        escrow = getattr(obj, 'escrow', None)
+        return escrow.can_settle if escrow else False
+
+    def get_settlement_blocked_reasons(self, obj):
+        from .models import Escrow
+        escrow = getattr(obj, 'escrow', None)
+        return escrow.settlement_blocked_reasons if escrow else []
+
+    def get_refund_requests(self, obj):
+        from .models import RefundRequest
+        requests = obj.refund_requests.all()
+        return RefundRequestSerializer(requests, many=True).data
 
 
 class DailyRecordSerializer(serializers.ModelSerializer):
@@ -160,5 +203,37 @@ class HandoverSerializer(serializers.ModelSerializer):
             'status', 'owner_confirmed', 'caregiver_confirmed',
             'owner_confirmed_at', 'caregiver_confirmed_at', 'confirmed_at',
             'created_by', 'related_dispute', 'has_discrepancies'
+        ]
+
+
+class EscrowSerializer(serializers.ModelSerializer):
+    order_info = OrderSerializer(source='order', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    can_settle = serializers.BooleanField(read_only=True)
+    settlement_blocked_reasons = serializers.ListField(read_only=True)
+
+    class Meta:
+        model = Escrow
+        fields = '__all__'
+        read_only_fields = [
+            'order', 'total_amount', 'platform_fee', 'caregiver_amount',
+            'refund_amount', 'status', 'paid_at', 'settled_at', 'refunded_at',
+            'settlement_notes'
+        ]
+
+
+class RefundRequestSerializer(serializers.ModelSerializer):
+    order_info = OrderSerializer(source='order', read_only=True)
+    escrow_info = EscrowSerializer(source='escrow', read_only=True)
+    initiator_name = serializers.CharField(source='initiator.username', read_only=True)
+    handled_by_name = serializers.CharField(source='handled_by.username', read_only=True, allow_null=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = RefundRequest
+        fields = '__all__'
+        read_only_fields = [
+            'order', 'escrow', 'initiator', 'status', 'handled_by',
+            'handled_at', 'reject_reason'
         ]
 

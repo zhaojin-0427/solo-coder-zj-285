@@ -16,13 +16,14 @@ import math
 from .models import (
     UserProfile, CaregiverProfile, Pet, FosterRequest,
     Order, DailyRecord, Review, OrderChange, Dispute, DisputeMessage,
-    Handover
+    Handover, Escrow, RefundRequest
 )
 from .serializers import (
     UserSerializer, UserProfileSerializer, CaregiverProfileSerializer,
     PetSerializer, FosterRequestSerializer, OrderSerializer,
     DailyRecordSerializer, ReviewSerializer, OrderChangeSerializer,
-    DisputeSerializer, DisputeMessageSerializer, HandoverSerializer
+    DisputeSerializer, DisputeMessageSerializer, HandoverSerializer,
+    EscrowSerializer, RefundRequestSerializer
 )
 
 
@@ -171,6 +172,19 @@ class FosterRequestViewSet(viewsets.ModelViewSet):
                 transport='owner_deliver',
                 services=foster_request.services or [],
             )
+
+            platform_fee_rate = 0.1
+            platform_fee = round(total_price * platform_fee_rate, 2)
+            caregiver_amount = round(total_price - platform_fee, 2)
+            Escrow.objects.create(
+                order=order,
+                total_amount=total_price,
+                platform_fee=platform_fee,
+                caregiver_amount=caregiver_amount,
+                refund_amount=0,
+                status='unpaid',
+            )
+
             foster_request.status = 'confirmed'
             foster_request.save()
 
@@ -192,11 +206,57 @@ class OrderViewSet(viewsets.ModelViewSet):
     filterset_fields = ['owner', 'caregiver', 'status']
 
     @action(detail=True, methods=['post'])
+    def pay_escrow(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        order = self.get_object()
+        if order.owner_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单主人可以支付托管金额'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        escrow = getattr(order, 'escrow', None)
+        if not escrow:
+            platform_fee_rate = 0.1
+            platform_fee = round(float(order.total_price) * platform_fee_rate, 2)
+            caregiver_amount = round(float(order.total_price) - platform_fee, 2)
+            escrow = Escrow.objects.create(
+                order=order,
+                total_amount=order.total_price,
+                platform_fee=platform_fee,
+                caregiver_amount=caregiver_amount,
+                refund_amount=0,
+                status='unpaid',
+            )
+        if escrow.status != 'unpaid':
+            return Response(
+                {'success': False, 'error': f'托管状态为{escrow.get_status_display()}，无需重复支付'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        escrow.status = 'held'
+        escrow.paid_at = timezone.now()
+        escrow.save()
+        return Response({
+            'success': True,
+            'escrow': EscrowSerializer(escrow).data,
+            'order': OrderSerializer(order).data,
+        })
+
+    @action(detail=True, methods=['post'])
     def start(self, request, pk=None):
         order = self.get_object()
         if order.status != 'pending':
             return Response(
                 {'success': False, 'error': '只有待确认状态的订单可以开始服务'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        escrow = getattr(order, 'escrow', None)
+        if not escrow or escrow.status != 'held':
+            return Response(
+                {'success': False, 'error': '请先支付托管金额后再开始服务'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         confirmed_handover = order.handovers.filter(stage='start', status='confirmed').first()
@@ -209,6 +269,16 @@ class OrderViewSet(viewsets.ModelViewSet):
         order.save()
         return Response(OrderSerializer(order).data)
 
+    def _try_auto_settle(self, order):
+        escrow = getattr(order, 'escrow', None)
+        if not escrow:
+            return
+        if escrow.can_settle:
+            escrow.status = 'settled'
+            escrow.settled_at = timezone.now()
+            escrow.settlement_notes = '双方评价完成，自动结算'
+            escrow.save()
+
     @action(detail=True, methods=['post'])
     def complete(self, request, pk=None):
         order = self.get_object()
@@ -217,13 +287,89 @@ class OrderViewSet(viewsets.ModelViewSet):
                 {'success': False, 'error': '存在未关闭的争议，请先协商解决后再完成订单'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        if order.handovers.filter(has_discrepancies=True, status='disputed').exists():
+            return Response(
+                {'success': False, 'error': '存在交接差异争议，请先解决后再完成订单'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if order.changes.filter(status='pending').exists():
+            return Response(
+                {'success': False, 'error': '存在待处理的订单变更，请先处理后再完成订单'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         order.status = 'completed'
         order.save()
         if order.caregiver.profile.caregiver:
             cg = order.caregiver.profile.caregiver
             cg.completed_orders = F('completed_orders') + 1
             cg.save()
+        self._try_auto_settle(order)
         return Response(OrderSerializer(order).data)
+
+    @action(detail=True, methods=['post'])
+    def settle(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        order = self.get_object()
+        escrow = getattr(order, 'escrow', None)
+        if not escrow:
+            return Response(
+                {'success': False, 'error': '该订单不存在托管记录'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if order.owner_id != request.user.id and order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单相关方可以申请结算'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        if not escrow.can_settle:
+            reasons = escrow.settlement_blocked_reasons
+            return Response(
+                {'success': False, 'error': '暂无法结算', 'blocked_reasons': reasons},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        escrow.status = 'settled'
+        escrow.settled_at = timezone.now()
+        escrow.settlement_notes = '手动结算'
+        escrow.save()
+        return Response({
+            'success': True,
+            'escrow': EscrowSerializer(escrow).data,
+            'order': OrderSerializer(order).data,
+        })
+
+    @action(detail=True, methods=['get'])
+    def escrow_detail(self, request, pk=None):
+        order = self.get_object()
+        escrow = getattr(order, 'escrow', None)
+        if not escrow:
+            return Response(
+                {'success': False, 'error': '该订单不存在托管记录'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        return Response(EscrowSerializer(escrow).data)
+
+    @action(detail=False, methods=['get'])
+    def caregiver_pending_income(self, request):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        escrows = Escrow.objects.filter(
+            order__caregiver=request.user,
+            status='held'
+        ).select_related('order')
+        total = sum(float(e.caregiver_amount) for e in escrows)
+        return Response({
+            'success': True,
+            'total_pending': round(total, 2),
+            'count': escrows.count(),
+            'escrows': EscrowSerializer(escrows, many=True).data,
+        })
 
 
 class DailyRecordViewSet(viewsets.ModelViewSet):
@@ -324,6 +470,13 @@ class ReviewViewSet(viewsets.ModelViewSet):
             cg.rating = round(avg_rating, 2)
             cg.review_count = count
             cg.save()
+
+        escrow = getattr(order, 'escrow', None)
+        if escrow and escrow.can_settle:
+            escrow.status = 'settled'
+            escrow.settled_at = timezone.now()
+            escrow.settlement_notes = '双方评价完成，自动结算'
+            escrow.save()
 
         return response
 
@@ -786,6 +939,35 @@ class StatisticsView(APIView):
             handover_discrepancy_count / total_handovers * 100, 2
         ) if total_handovers > 0 else 0
 
+        escrows_qs = Escrow.objects.all()
+        refund_requests_qs = RefundRequest.objects.all()
+        if district:
+            escrows_qs = escrows_qs.filter(order__foster_request__district=district)
+            escrow_ids = escrows_qs.values_list('id', flat=True)
+            refund_requests_qs = refund_requests_qs.filter(escrow_id__in=escrow_ids)
+
+        total_escrows = escrows_qs.count()
+        total_escrow_amount = round(sum(float(e.total_amount) for e in escrows_qs), 2) if total_escrows > 0 else 0
+        total_platform_fee = round(sum(float(e.platform_fee) for e in escrows_qs), 2) if total_escrows > 0 else 0
+
+        settled_escrows = escrows_qs.filter(status='settled')
+        settled_count = settled_escrows.count()
+        settled_amount = round(sum(float(e.caregiver_amount) for e in settled_escrows), 2) if settled_count > 0 else 0
+
+        held_escrows = escrows_qs.filter(status='held')
+        held_count = held_escrows.count()
+        pending_amount = round(sum(float(e.caregiver_amount) for e in held_escrows), 2) if held_count > 0 else 0
+
+        refunded_escrows = escrows_qs.filter(status__in=['refunded', 'partially_refunded'])
+        refunded_count = refunded_escrows.count()
+        total_refund_amount = round(sum(float(e.refund_amount) for e in escrows_qs), 2) if total_escrows > 0 else 0
+
+        refund_rate = round(total_refund_amount / total_escrow_amount * 100, 2) if total_escrow_amount > 0 else 0
+
+        approved_refunds = refund_requests_qs.filter(status='approved').count()
+        total_refund_requests = refund_requests_qs.count()
+        refund_approval_rate = round(approved_refunds / total_refund_requests * 100, 2) if total_refund_requests > 0 else 0
+
         return Response({
             'overview': {
                 'total_orders': total_orders,
@@ -811,6 +993,19 @@ class StatisticsView(APIView):
                 'disputed_handovers': disputed_handovers,
                 'handover_discrepancy_rate': handover_discrepancy_rate,
                 'handover_discrepancy_count': handover_discrepancy_count,
+                'total_escrow_amount': total_escrow_amount,
+                'total_escrows': total_escrows,
+                'total_platform_fee': total_platform_fee,
+                'settled_amount': settled_amount,
+                'settled_count': settled_count,
+                'pending_amount': pending_amount,
+                'pending_count': held_count,
+                'total_refund_amount': total_refund_amount,
+                'refunded_count': refunded_count,
+                'refund_rate': refund_rate,
+                'refund_approval_rate': refund_approval_rate,
+                'total_refund_requests': total_refund_requests,
+                'approved_refunds': approved_refunds,
             },
             'district_activity': district_activity,
             'district_orders': district_orders,
@@ -818,6 +1013,16 @@ class StatisticsView(APIView):
             'abnormal_by_type': abnormal_by_type,
             'order_trend': order_trend,
             'avg_reviews': avg_reviews,
+            'escrow_by_status': [
+                {'status': '待支付', 'status_key': 'unpaid', 'count': escrows_qs.filter(status='unpaid').count(),
+                 'amount': round(sum(float(e.total_amount) for e in escrows_qs.filter(status='unpaid')), 2)},
+                {'status': '托管中', 'status_key': 'held', 'count': held_count, 'amount': pending_amount},
+                {'status': '已结算', 'status_key': 'settled', 'count': settled_count, 'amount': settled_amount},
+                {'status': '已退款', 'status_key': 'refunded', 'count': escrows_qs.filter(status='refunded').count(),
+                 'amount': round(sum(float(e.refund_amount) for e in escrows_qs.filter(status='refunded')), 2)},
+                {'status': '部分退款', 'status_key': 'partially_refunded', 'count': escrows_qs.filter(status='partially_refunded').count(),
+                 'amount': round(sum(float(e.refund_amount) for e in escrows_qs.filter(status='partially_refunded')), 2)},
+            ],
             'current_district': district,
         })
 
@@ -1044,3 +1249,203 @@ class HandoverViewSet(viewsets.ModelViewSet):
         handover.save()
 
         return Response({'success': True, 'handover': HandoverSerializer(handover).data})
+
+
+class EscrowViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Escrow.objects.all()
+    serializer_class = EscrowSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['order', 'status']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user.is_authenticated:
+            return qs.none()
+        return qs.filter(Q(order__owner=user) | Q(order__caregiver=user))
+
+
+class RefundRequestViewSet(viewsets.ModelViewSet):
+    queryset = RefundRequest.objects.all()
+    serializer_class = RefundRequestSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['order', 'escrow', 'initiator', 'status']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if not user.is_authenticated:
+            return qs.none()
+        return qs.filter(Q(order__owner=user) | Q(order__caregiver=user))
+
+    def create(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        order_id = request.data.get('order')
+        try:
+            order = Order.objects.get(id=order_id)
+        except Order.DoesNotExist:
+            return Response(
+                {'success': False, 'error': '订单不存在'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if order.owner_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有宠物主人可以发起退款申请'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        escrow = getattr(order, 'escrow', None)
+        if not escrow or escrow.status not in ['held', 'partially_refunded']:
+            return Response(
+                {'success': False, 'error': '该订单无可退款的托管金额'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        amount = request.data.get('amount')
+        if not amount:
+            return Response(
+                {'success': False, 'error': '请填写退款金额'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            amount = float(amount)
+        except (ValueError, TypeError):
+            return Response(
+                {'success': False, 'error': '退款金额格式不正确'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        available_refund = float(escrow.total_amount) - float(escrow.refund_amount)
+        if amount <= 0:
+            return Response(
+                {'success': False, 'error': '退款金额必须大于0'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if amount > available_refund:
+            return Response(
+                {'success': False, 'error': f'退款金额超过可退金额（最多可退¥{available_refund:.2f}）'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        pending_refunds = RefundRequest.objects.filter(
+            order=order, status='pending'
+        ).exists()
+        if pending_refunds:
+            return Response(
+                {'success': False, 'error': '该订单已有待处理的退款申请'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        data = request.data.copy()
+        data['escrow'] = escrow.id
+        data['amount'] = amount
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        refund_request = serializer.save(initiator=request.user)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        refund = self.get_object()
+        if refund.status != 'pending':
+            return Response(
+                {'success': False, 'error': '该退款申请已处理'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        order = refund.order
+        if order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有代养人可以同意退款申请'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        escrow = refund.escrow
+        refund_amount = float(refund.amount)
+        escrow.refund_amount = float(escrow.refund_amount) + refund_amount
+        escrow.caregiver_amount = max(0, float(escrow.caregiver_amount) - refund_amount)
+
+        if float(escrow.refund_amount) >= float(escrow.total_amount):
+            escrow.status = 'refunded'
+        else:
+            escrow.status = 'partially_refunded'
+        escrow.refunded_at = timezone.now()
+        escrow.save()
+
+        refund.status = 'approved'
+        refund.handled_by = request.user
+        refund.handled_at = timezone.now()
+        refund.save()
+
+        return Response({
+            'success': True,
+            'refund': RefundRequestSerializer(refund).data,
+            'escrow': EscrowSerializer(escrow).data,
+        })
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        refund = self.get_object()
+        if refund.status != 'pending':
+            return Response(
+                {'success': False, 'error': '该退款申请已处理'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        order = refund.order
+        if order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有代养人可以拒绝退款申请'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        refund.status = 'rejected'
+        refund.handled_by = request.user
+        refund.handled_at = timezone.now()
+        refund.reject_reason = request.data.get('reject_reason', '')
+        refund.save()
+
+        return Response({
+            'success': True,
+            'refund': RefundRequestSerializer(refund).data,
+        })
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        refund = self.get_object()
+        if refund.status != 'pending':
+            return Response(
+                {'success': False, 'error': '该退款申请已处理，无法取消'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if refund.initiator_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有发起人可以取消退款申请'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        refund.status = 'cancelled'
+        refund.save()
+        return Response({
+            'success': True,
+            'refund': RefundRequestSerializer(refund).data,
+        })

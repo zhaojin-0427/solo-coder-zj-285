@@ -349,3 +349,99 @@ class Handover(models.Model):
     def is_editable(self):
         return self.status != 'confirmed'
 
+
+class Escrow(models.Model):
+    STATUS_CHOICES = [
+        ('unpaid', '待支付'),
+        ('held', '托管中'),
+        ('settled', '已结算'),
+        ('refunded', '已退款'),
+        ('partially_refunded', '部分退款'),
+    ]
+
+    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='escrow')
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, help_text='托管总金额')
+    platform_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text='平台服务费')
+    caregiver_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text='代养人应收金额')
+    refund_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text='退款金额')
+    status = models.CharField(max_length=30, choices=STATUS_CHOICES, default='unpaid')
+    paid_at = models.DateTimeField(null=True, blank=True, help_text='支付托管时间')
+    settled_at = models.DateTimeField(null=True, blank=True, help_text='结算时间')
+    refunded_at = models.DateTimeField(null=True, blank=True, help_text='退款时间')
+    settlement_notes = models.TextField(blank=True, help_text='结算备注')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'托管 #{self.id} - 订单{self.order.id} ({self.get_status_display()})'
+
+    @property
+    def can_settle(self):
+        if self.status != 'held':
+            return False
+        order = self.order
+        if order.disputes.filter(status='open').exists():
+            return False
+        if order.handovers.filter(has_discrepancies=True, status='disputed').exists():
+            return False
+        if order.changes.filter(status='pending').exists():
+            return False
+        if order.status != 'completed':
+            return False
+        if not order.owner_reviewed or not order.caregiver_reviewed:
+            return False
+        return True
+
+    @property
+    def settlement_blocked_reasons(self):
+        reasons = []
+        if self.status != 'held':
+            reasons.append(f'托管状态为{self.get_status_display()}，非托管中')
+        order = self.order
+        if order.disputes.filter(status='open').exists():
+            reasons.append('存在未关闭的争议')
+        if order.handovers.filter(has_discrepancies=True, status='disputed').exists():
+            reasons.append('存在交接差异争议')
+        if order.changes.filter(status='pending').exists():
+            reasons.append('存在待处理的订单变更')
+        if order.status != 'completed':
+            reasons.append(f'订单状态为{order.get_status_display()}，非已完成')
+        if not order.owner_reviewed:
+            reasons.append('主人尚未评价')
+        if not order.caregiver_reviewed:
+            reasons.append('代养人尚未评价')
+        return reasons
+
+
+class RefundRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending', '待处理'),
+        ('approved', '已同意'),
+        ('rejected', '已拒绝'),
+        ('cancelled', '已取消'),
+    ]
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='refund_requests')
+    escrow = models.ForeignKey(Escrow, on_delete=models.CASCADE, related_name='refund_requests')
+    initiator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='refund_requests_initiated')
+    amount = models.DecimalField(max_digits=10, decimal_places=2, help_text='申请退款金额')
+    reason = models.TextField(help_text='退款原因')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    handled_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='refund_requests_handled'
+    )
+    handled_at = models.DateTimeField(null=True, blank=True)
+    reject_reason = models.TextField(blank=True, help_text='拒绝原因')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'退款申请 #{self.id} - 订单{self.order.id} - ¥{self.amount}'
+

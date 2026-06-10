@@ -14,6 +14,8 @@ router.register(r'reviews', views.ReviewViewSet)
 router.register(r'order-changes', views.OrderChangeViewSet)
 router.register(r'disputes', views.DisputeViewSet)
 router.register(r'handovers', views.HandoverViewSet)
+router.register(r'escrows', views.EscrowViewSet)
+router.register(r'refund-requests', views.RefundRequestViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),

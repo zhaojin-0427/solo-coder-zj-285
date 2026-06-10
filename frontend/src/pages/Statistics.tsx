@@ -7,6 +7,7 @@ import {
   WarningOutlined, CheckCircleOutlined, StarOutlined,
   EnvironmentOutlined, SyncOutlined, SolutionOutlined,
   ClockCircleOutlined, CarryOutOutlined, FileTextOutlined,
+  BankOutlined, DollarOutlined, PayCircleOutlined, RollbackOutlined,
 } from '@ant-design/icons';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -70,7 +71,7 @@ const StatisticsPage: React.FC = () => {
     return <Empty description="暂无统计数据" />;
   }
 
-  const { overview, district_activity, district_orders, top_caregivers, abnormal_by_type, order_trend, avg_reviews, current_district } = stats;
+  const { overview, district_activity, district_orders, top_caregivers, abnormal_by_type, order_trend, avg_reviews, escrow_by_status, current_district } = stats;
 
   return (
     <div className="page-container">
@@ -264,6 +265,124 @@ const StatisticsPage: React.FC = () => {
             />
             <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
               <WarningOutlined style={{ color: '#fa541c' }} /> 有差异 {overview.handover_discrepancy_count || 0} / 共 {overview.total_handovers || 0} 次
+            </div>
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>托管总额</span>}
+              value={overview.total_escrow_amount || 0}
+              precision={2}
+              prefix={<BankOutlined style={{ color: '#1677ff' }} />}
+              suffix="元"
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              共 {overview.total_escrows || 0} 笔托管
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>已结算金额</span>}
+              value={overview.settled_amount || 0}
+              precision={2}
+              prefix={<DollarOutlined style={{ color: '#52c41a' }} />}
+              suffix="元"
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8 }}>
+              <Progress
+                percent={overview.total_escrow_amount ? Math.round((overview.settled_amount || 0) / overview.total_escrow_amount * 100) : 0}
+                strokeColor="#52c41a"
+                size="small"
+              />
+              <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+                {overview.settled_count || 0} 笔已结算
+              </div>
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>待结算金额</span>}
+              value={overview.pending_amount || 0}
+              precision={2}
+              prefix={<PayCircleOutlined style={{ color: '#faad14' }} />}
+              suffix="元"
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              {overview.pending_count || 0} 笔待结算
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>平台服务费</span>}
+              value={overview.total_platform_fee || 0}
+              precision={2}
+              prefix={<ShoppingOutlined style={{ color: '#722ed1' }} />}
+              suffix="元"
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              费率 10%
+            </div>
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>退款总额</span>}
+              value={overview.total_refund_amount || 0}
+              precision={2}
+              prefix={<RollbackOutlined style={{ color: '#ef4444' }} />}
+              suffix="元"
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              共 {overview.refunded_count || 0} 笔退款
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>退款率</span>}
+              value={overview.refund_rate || 0}
+              precision={1}
+              suffix="%"
+              prefix={<RollbackOutlined style={{ color: '#fa541c' }} />}
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              退款申请 {overview.total_refund_requests || 0} 笔
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>退款审批通过率</span>}
+              value={overview.refund_approval_rate || 0}
+              precision={1}
+              suffix="%"
+              prefix={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              已批准 {overview.approved_refunds || 0} 笔
             </div>
           </Card>
         </Col>
@@ -481,6 +600,68 @@ const StatisticsPage: React.FC = () => {
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Col xs={24} lg={12}>
+          <Card title="💰 托管状态金额分布">
+            {!escrow_by_status || escrow_by_status.length === 0 ? (
+              <Empty />
+            ) : (
+              <div style={{ height: 300 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={escrow_by_status.map((e: any) => ({
+                        name: e.status || e.status_key,
+                        value: Number(e.amount || 0),
+                        count: e.count || 0,
+                      }))}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={100}
+                      dataKey="value"
+                      label={({ name, percent, value }) => `${name} ${(percent * 100).toFixed(0)}% ¥${value}`}
+                    >
+                      {escrow_by_status.map((_: any, idx: number) => (
+                        <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(value: any) => [`¥${value}`, '金额']} />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </Card>
+        </Col>
+        <Col xs={24} lg={12}>
+          <Card title="📦 各托管状态订单数量">
+            {!escrow_by_status || escrow_by_status.length === 0 ? (
+              <Empty />
+            ) : (
+              <div style={{ height: 300 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={escrow_by_status.map((e: any) => ({
+                    status: e.status || e.status_key,
+                    count: e.count || 0,
+                    amount: Number(e.amount || 0),
+                  }))}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="status" />
+                    <YAxis yAxisId="left" />
+                    <YAxis yAxisId="right" orientation="right" />
+                    <Tooltip />
+                    <Legend />
+                    <Bar yAxisId="left" dataKey="count" name="订单数" fill="#1890ff" radius={[4, 4, 0, 0]} />
+                    <Bar yAxisId="right" dataKey="amount" name="金额(元)" fill="#52c41a" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
               </div>
             )}
           </Card>
