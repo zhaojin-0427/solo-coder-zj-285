@@ -6,7 +6,7 @@ import {
   TeamOutlined, HeartOutlined, ShoppingOutlined,
   WarningOutlined, CheckCircleOutlined, StarOutlined,
   EnvironmentOutlined, SyncOutlined, SolutionOutlined,
-  ClockCircleOutlined, CarryOutOutlined,
+  ClockCircleOutlined, CarryOutOutlined, FileTextOutlined,
 } from '@ant-design/icons';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -204,6 +204,66 @@ const StatisticsPage: React.FC = () => {
             />
             <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
               <CheckCircleOutlined style={{ color: '#52c41a' }} /> 已解决 {overview.escalated_resolved || 0} / 升级 {overview.escalated_count || 0} 次
+            </div>
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>交接总数</span>}
+              value={overview.total_handovers || 0}
+              prefix={<FileTextOutlined style={{ color: '#13c2c2' }} />}
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              历史累计交接清单数量
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>已确认交接</span>}
+              value={overview.confirmed_handovers || 0}
+              prefix={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8 }}>
+              <Progress
+                percent={overview.total_handovers > 0 ? Math.round((overview.confirmed_handovers || 0) / overview.total_handovers * 100) : 0}
+                strokeColor="#52c41a"
+                size="small"
+              />
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>交接争议数</span>}
+              value={overview.disputed_handovers || 0}
+              prefix={<WarningOutlined style={{ color: '#fa541c' }} />}
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              交接过程中产生的争议数量
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>交接差异率</span>}
+              value={overview.handover_discrepancy_rate || 0}
+              suffix="%"
+              prefix={<SyncOutlined style={{ color: '#722ed1' }} />}
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              <WarningOutlined style={{ color: '#fa541c' }} /> 有差异 {overview.handover_discrepancy_count || 0} / 共 {overview.total_handovers || 0} 次
             </div>
           </Card>
         </Col>

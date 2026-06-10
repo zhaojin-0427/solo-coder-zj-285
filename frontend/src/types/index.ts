@@ -84,6 +84,48 @@ export interface FosterRequest {
   updated_at: string;
 }
 
+export interface HandoverItem {
+  name: string;
+  quantity: string;
+}
+
+export interface HandoverDiscrepancy {
+  field: string;
+  description: string;
+}
+
+export interface Handover {
+  id: number;
+  order: number;
+  order_info?: Order;
+  stage: 'start' | 'end';
+  stage_display?: string;
+  status: 'draft' | 'pending_owner_confirm' | 'pending_caregiver_confirm' | 'confirmed' | 'disputed';
+  status_display?: string;
+  items: HandoverItem[];
+  feeding_instructions: string;
+  health_notes: string;
+  location: string;
+  photos: string[];
+  expected_time?: string;
+  actual_items: HandoverItem[];
+  actual_notes: string;
+  discrepancies: HandoverDiscrepancy[];
+  has_discrepancies: boolean;
+  related_dispute?: number;
+  related_dispute_info?: Dispute;
+  owner_confirmed: boolean;
+  caregiver_confirmed: boolean;
+  owner_confirmed_at?: string;
+  caregiver_confirmed_at?: string;
+  confirmed_at?: string;
+  created_by?: number;
+  created_by_name?: string;
+  created_at: string;
+  updated_at: string;
+  is_editable: boolean;
+}
+
 export interface Order {
   id: number;
   foster_request: number;
@@ -102,6 +144,9 @@ export interface Order {
   has_open_dispute?: boolean;
   owner_reviewed: boolean;
   caregiver_reviewed: boolean;
+  handovers?: Handover[];
+  latest_start_handover?: Handover | null;
+  can_start_service?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -222,6 +267,11 @@ export interface Statistics {
     escalation_resolution_rate: number;
     escalated_count: number;
     escalated_resolved: number;
+    total_handovers: number;
+    confirmed_handovers: number;
+    disputed_handovers: number;
+    handover_discrepancy_count: number;
+    handover_discrepancy_rate: number;
   };
   district_activity: { district: string; count: number }[];
   district_orders: { district: string; total: number; completed: number }[];

@@ -1,7 +1,8 @@
 import axios from 'axios';
 import type {
   User, UserProfile, CaregiverProfile, Pet, FosterRequest,
-  Order, DailyRecord, Review, Statistics, OrderChange, Dispute, DisputeMessage
+  Order, DailyRecord, Review, Statistics, OrderChange, Dispute, DisputeMessage,
+  Handover
 } from '../types';
 
 const api = axios.create({
@@ -93,4 +94,18 @@ export const disputeApi = {
 
 export const statsApi = {
   get: (params?: any) => api.get<Statistics>('/statistics/', { params }),
+};
+
+export const handoverApi = {
+  list: (params?: any) => api.get<Handover[]>('/handovers/', { params }),
+  get: (id: number) => api.get<Handover>(`/handovers/${id}/`),
+  create: (data: any) => api.post<Handover>('/handovers/', data),
+  update: (id: number, data: any) => api.put<Handover>(`/handovers/${id}/`, data),
+  submit: (id: number) => api.post<{ success: boolean; handover: Handover }>(`/handovers/${id}/submit_for_confirmation/`),
+  caregiverConfirm: (id: number, data?: any) =>
+    api.post<{ success: boolean; handover: Handover; dispute_created?: boolean; dispute?: Dispute }>(
+      `/handovers/${id}/caregiver_confirm/`, data || {}
+    ),
+  ownerFinalConfirm: (id: number) =>
+    api.post<{ success: boolean; handover: Handover }>(`/handovers/${id}/owner_final_confirm/`),
 };

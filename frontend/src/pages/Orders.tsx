@@ -10,13 +10,14 @@ import {
   CameraOutlined, ExclamationCircleOutlined, EditOutlined,
   SyncOutlined, ClockCircleOutlined, SolutionOutlined,
   WarningOutlined, CloseCircleOutlined, MessageOutlined,
-  CarryOutOutlined,
+  CarryOutOutlined, FileTextOutlined, SwapOutlined,
+  MinusCircleOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
-import { orderApi, dailyRecordApi, reviewApi, orderChangeApi, disputeApi } from '../api';
+import { orderApi, dailyRecordApi, reviewApi, orderChangeApi, disputeApi, handoverApi } from '../api';
 import { useAuth } from '../context/AuthContext';
-import type { Order, DailyRecord, Review, OrderChange as OrderChangeType, Dispute, DisputeMessage } from '../types';
+import type { Order, DailyRecord, Review, OrderChange as OrderChangeType, Dispute, DisputeMessage, Handover, HandoverItem, HandoverDiscrepancy } from '../types';
 
 const { TabPane } = Tabs;
 const { TextArea } = Input;
@@ -57,6 +58,19 @@ const triggerTypeMap: Record<string, { color: string; label: string }> = {
   feeding_missing: { color: 'orange', label: '连续喂养缺失' },
   photo_missing: { color: 'yellow', label: '连续照片缺失' },
   manual: { color: 'blue', label: '用户发起' },
+};
+
+const handoverStatusMap: Record<string, { color: string; label: string }> = {
+  draft: { color: 'default', label: '草稿' },
+  pending_owner_confirm: { color: 'orange', label: '待主人确认' },
+  pending_caregiver_confirm: { color: 'blue', label: '待代养人确认' },
+  confirmed: { color: 'green', label: '已确认' },
+  disputed: { color: 'red', label: '有争议' },
+};
+
+const handoverStageMap: Record<string, { color: string; label: string }> = {
+  start: { color: 'green', label: '开始服务交接' },
+  end: { color: 'orange', label: '结束服务交接' },
 };
 
 const transportOptions = [
@@ -101,6 +115,19 @@ const Orders: React.FC = () => {
   const [activeDispute, setActiveDispute] = useState<Dispute | null>(null);
   const [disputeMsgForm] = Form.useForm();
 
+  const [orderHandovers, setOrderHandovers] = useState<Handover[]>([]);
+  const [handoverModal, setHandoverModal] = useState(false);
+  const [handoverForm] = Form.useForm();
+  const [editingHandover, setEditingHandover] = useState<Handover | null>(null);
+  const [handoverItems, setHandoverItems] = useState<HandoverItem[]>([]);
+  const [handoverPhotos, setHandoverPhotos] = useState<string[]>([]);
+
+  const [caregiverConfirmModal, setCaregiverConfirmModal] = useState(false);
+  const [caregiverConfirmForm] = Form.useForm();
+  const [confirmingHandover, setConfirmingHandover] = useState<Handover | null>(null);
+  const [actualItems, setActualItems] = useState<HandoverItem[]>([]);
+  const [discrepancies, setDiscrepancies] = useState<HandoverDiscrepancy[]>([]);
+
   useEffect(() => {
     loadOrders();
   }, [activeTab]);
@@ -127,17 +154,19 @@ const Orders: React.FC = () => {
     setDetailOrder(order);
     setDetailModal(true);
     try {
-      const [r, rv, ch, dp] = await Promise.all([
+      const [r, rv, ch, dp, hd] = await Promise.all([
         dailyRecordApi.list({ order: order.id }),
         reviewApi.list({ order: order.id }),
         orderChangeApi.list({ order: order.id }),
         disputeApi.list({ order: order.id }),
+        handoverApi.list({ order: order.id }),
       ]);
       setDailyRecords(Array.isArray(r.data) ? r.data : (r.data as any).results || []);
       setOrderReviews(Array.isArray(rv.data) ? rv.data : (rv.data as any).results || []);
       setOrderChanges(Array.isArray(ch.data) ? ch.data : (ch.data as any).results || []);
       const disputes = Array.isArray(dp.data) ? dp.data : (dp.data as any).results || [];
       setOrderDisputes(disputes);
+      setOrderHandovers(Array.isArray(hd.data) ? hd.data : (hd.data as any).results || []);
       if (disputes.length > 0) {
         const openDispute = disputes.find((d: Dispute) => d.status === 'open');
         if (openDispute) {
@@ -434,6 +463,193 @@ const Orders: React.FC = () => {
 
   const isOrderInvolved = (o: Order) => o.owner === user?.id || o.caregiver === user?.id;
 
+  const openCreateHandover = (order: Order) => {
+    setCurrentOrder(order);
+    setEditingHandover(null);
+    setHandoverItems([]);
+    setHandoverPhotos([]);
+    handoverForm.resetFields();
+    handoverForm.setFieldsValue({
+      stage: 'start',
+      feeding_instructions: '',
+      health_notes: '',
+      location: '',
+    });
+    setHandoverModal(true);
+  };
+
+  const openEditHandover = (handover: Handover) => {
+    setEditingHandover(handover);
+    setHandoverItems(handover.items || []);
+    setHandoverPhotos(handover.photos || []);
+    handoverForm.resetFields();
+    handoverForm.setFieldsValue({
+      stage: handover.stage,
+      feeding_instructions: handover.feeding_instructions,
+      health_notes: handover.health_notes,
+      location: handover.location,
+      expected_time: handover.expected_time ? dayjs(handover.expected_time) : undefined,
+    });
+    setHandoverModal(true);
+  };
+
+  const addHandoverItem = () => {
+    setHandoverItems([...handoverItems, { name: '', quantity: '' }]);
+  };
+
+  const removeHandoverItem = (idx: number) => {
+    setHandoverItems(handoverItems.filter((_, i) => i !== idx));
+  };
+
+  const updateHandoverItem = (idx: number, field: 'name' | 'quantity', value: string) => {
+    const newItems = [...handoverItems];
+    newItems[idx] = { ...newItems[idx], [field]: value };
+    setHandoverItems(newItems);
+  };
+
+  const addPhotoUrl = () => {
+    setHandoverPhotos([...handoverPhotos, '']);
+  };
+
+  const removePhotoUrl = (idx: number) => {
+    setHandoverPhotos(handoverPhotos.filter((_, i) => i !== idx));
+  };
+
+  const updatePhotoUrl = (idx: number, value: string) => {
+    const newPhotos = [...handoverPhotos];
+    newPhotos[idx] = value;
+    setHandoverPhotos(newPhotos);
+  };
+
+  const saveHandover = async (submitForConfirm = false) => {
+    try {
+      const values = await handoverForm.validateFields();
+      const data: any = {
+        order: currentOrder?.id,
+        stage: values.stage,
+        items: handoverItems.filter(i => i.name.trim()),
+        feeding_instructions: values.feeding_instructions || '',
+        health_notes: values.health_notes || '',
+        location: values.location || '',
+        photos: handoverPhotos.filter(p => p.trim()),
+        expected_time: values.expected_time ? values.expected_time.format('YYYY-MM-DD HH:mm:ss') : null,
+      };
+
+      let handover: Handover;
+      if (editingHandover) {
+        const res = await handoverApi.update(editingHandover.id, data);
+        handover = res.data;
+      } else {
+        const res = await handoverApi.create(data);
+        handover = res.data;
+      }
+
+      if (submitForConfirm) {
+        const submitRes = await handoverApi.submit(handover.id);
+        handover = submitRes.data.handover;
+        message.success('交接清单已提交，等待代养人确认');
+      } else {
+        message.success('交接清单已保存');
+      }
+
+      setHandoverModal(false);
+      if (detailOrder) {
+        openDetail(detailOrder);
+      }
+      loadOrders();
+    } catch (e: any) {
+      message.error(e?.response?.data?.error || '保存失败');
+    }
+  };
+
+  const openCaregiverConfirm = (handover: Handover) => {
+    setConfirmingHandover(handover);
+    setActualItems(handover.items || []);
+    setDiscrepancies([]);
+    caregiverConfirmForm.resetFields();
+    caregiverConfirmForm.setFieldsValue({
+      actual_notes: '',
+      has_discrepancies: false,
+    });
+    setCaregiverConfirmModal(true);
+  };
+
+  const addActualItem = () => {
+    setActualItems([...actualItems, { name: '', quantity: '' }]);
+  };
+
+  const removeActualItem = (idx: number) => {
+    setActualItems(actualItems.filter((_, i) => i !== idx));
+  };
+
+  const updateActualItem = (idx: number, field: 'name' | 'quantity', value: string) => {
+    const newItems = [...actualItems];
+    newItems[idx] = { ...newItems[idx], [field]: value };
+    setActualItems(newItems);
+  };
+
+  const addDiscrepancy = () => {
+    setDiscrepancies([...discrepancies, { field: '', description: '' }]);
+  };
+
+  const removeDiscrepancy = (idx: number) => {
+    setDiscrepancies(discrepancies.filter((_, i) => i !== idx));
+  };
+
+  const updateDiscrepancy = (idx: number, field: 'field' | 'description', value: string) => {
+    const newDisc = [...discrepancies];
+    newDisc[idx] = { ...newDisc[idx], [field]: value };
+    setDiscrepancies(newDisc);
+  };
+
+  const submitCaregiverConfirm = async () => {
+    if (!confirmingHandover) return;
+    try {
+      const values = await caregiverConfirmForm.validateFields();
+      const res = await handoverApi.caregiverConfirm(confirmingHandover.id, {
+        actual_items: actualItems.filter(i => i.name.trim()),
+        actual_notes: values.actual_notes || '',
+        discrepancies: discrepancies.filter(d => d.field.trim() || d.description.trim()),
+        has_discrepancies: values.has_discrepancies || discrepancies.length > 0,
+      });
+      if (res.data.dispute_created) {
+        message.warning('已标记差异，系统已自动创建争议，请协商解决');
+      } else {
+        message.success('交接已确认，等待主人最终确认');
+      }
+      setCaregiverConfirmModal(false);
+      if (detailOrder) {
+        openDetail(detailOrder);
+      }
+      loadOrders();
+    } catch (e: any) {
+      message.error(e?.response?.data?.error || '确认失败');
+    }
+  };
+
+  const handleOwnerFinalConfirm = async (handover: Handover) => {
+    modal.confirm({
+      title: '最终确认交接',
+      content: '确认后交接清单将不可编辑，订单将可以开始服务。',
+      onOk: async () => {
+        try {
+          await handoverApi.ownerFinalConfirm(handover.id);
+          message.success('交接已完成确认');
+          if (detailOrder) {
+            openDetail(detailOrder);
+          }
+          loadOrders();
+        } catch (e: any) {
+          message.error(e?.response?.data?.error || '确认失败');
+        }
+      },
+    });
+  };
+
+  const getStartHandover = () => {
+    return orderHandovers.find(h => h.stage === 'start');
+  };
+
   return (
     <div className="page-container">
       <div className="page-header">
@@ -542,6 +758,11 @@ const Orders: React.FC = () => {
                       <Button type="primary" block onClick={() => openDetail(order)}>
                         查看详情
                       </Button>
+                      {(order.status === 'pending' || order.status === 'active') && isOwner && (
+                        <Button block icon={<FileTextOutlined />} onClick={() => openCreateHandover(order)}>
+                          {order.latest_start_handover ? '编辑交接清单' : '发起交接清单'}
+                        </Button>
+                      )}
                       {order.status === 'pending' && (
                         <Button block onClick={() => handleStart(order)}>
                           开始服务
@@ -824,6 +1045,165 @@ const Orders: React.FC = () => {
             </Descriptions>
 
             <Tabs defaultActiveKey="records">
+              <TabPane tab={<span><FileTextOutlined />交接清单</span>} key="handovers">
+                <div style={{ marginBottom: 16 }}>
+                  <Space>
+                    {(detailOrder.status === 'pending' || detailOrder.status === 'active') && detailOrder.owner === user?.id && (
+                      <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreateHandover(detailOrder)}>
+                        {getStartHandover() ? '编辑交接清单' : '发起交接清单'}
+                      </Button>
+                    )}
+                  </Space>
+                </div>
+                {orderHandovers.length === 0 ? (
+                  <Empty description="暂无交接记录" />
+                ) : (
+                  <List
+                    dataSource={orderHandovers.sort((a, b) => dayjs(b.created_at).unix() - dayjs(a.created_at).unix())}
+                    renderItem={(handover) => {
+                      const hs = handoverStatusMap[handover.status];
+                      const hst = handoverStageMap[handover.stage];
+                      const isOwner = detailOrder.owner === user?.id;
+                      const isCaregiver = detailOrder.caregiver === user?.id;
+                      return (
+                        <List.Item key={handover.id}>
+                          <Card style={{ width: '100%', borderRadius: 8 }} bodyStyle={{ padding: 16 }}>
+                            <Space style={{ marginBottom: 12 }} wrap>
+                              <Tag color={hst.color} icon={<SwapOutlined />}>{hst.label}</Tag>
+                              <Tag color={hs.color}>{hs.label}</Tag>
+                              {handover.has_discrepancies && <Tag color="red" icon={<WarningOutlined />}>有差异/异常</Tag>}
+                              <span style={{ color: '#6b7280', fontSize: 12 }}>
+                                <ClockCircleOutlined /> 创建时间：{dayjs(handover.created_at).format('YYYY-MM-DD HH:mm')}
+                              </span>
+                              {handover.confirmed_at && (
+                                <span style={{ color: '#52c41a', fontSize: 12 }}>
+                                  <CheckCircleOutlined /> 确认时间：{dayjs(handover.confirmed_at).format('YYYY-MM-DD HH:mm')}
+                                </span>
+                              )}
+                            </Space>
+
+                            <Descriptions column={2} size="small" style={{ marginBottom: 12 }} bordered>
+                              <Descriptions.Item label="接送地点" span={2}>
+                                {handover.location || '未填写'}
+                              </Descriptions.Item>
+                              <Descriptions.Item label="预计交接时间" span={2}>
+                                {handover.expected_time ? dayjs(handover.expected_time).format('YYYY-MM-DD HH:mm') : '未填写'}
+                              </Descriptions.Item>
+                              <Descriptions.Item label="宠物随身物品" span={2}>
+                                {handover.items && handover.items.length > 0 ? (
+                                  <Space wrap>
+                                    {handover.items.map((it, idx) => (
+                                      <Tag key={idx} color="blue">{it.name} × {it.quantity}</Tag>
+                                    ))}
+                                  </Space>
+                                ) : '未填写'}
+                              </Descriptions.Item>
+                              <Descriptions.Item label="喂养/用药说明" span={2}>
+                                {handover.feeding_instructions || '未填写'}
+                              </Descriptions.Item>
+                              <Descriptions.Item label="健康异常备注" span={2}>
+                                {handover.health_notes ? (
+                                  <span style={{ color: '#ef4444' }}>{handover.health_notes}</span>
+                                ) : '无'}
+                              </Descriptions.Item>
+                              <Descriptions.Item label="交接照片" span={2}>
+                                {handover.photos && handover.photos.length > 0 ? (
+                                  <Space wrap>
+                                    {handover.photos.map((p, idx) => (
+                                      <a key={idx} href={p} target="_blank" rel="noreferrer">
+                                        📷 照片 {idx + 1}
+                                      </a>
+                                    ))}
+                                  </Space>
+                                ) : '未上传'}
+                              </Descriptions.Item>
+                              {handover.status !== 'draft' && handover.status !== 'pending_caregiver_confirm' && (
+                                <>
+                                  <Descriptions.Item label="实际接收物品" span={2}>
+                                    {handover.actual_items && handover.actual_items.length > 0 ? (
+                                      <Space wrap>
+                                        {handover.actual_items.map((it, idx) => (
+                                          <Tag key={idx} color="green">{it.name} × {it.quantity}</Tag>
+                                        ))}
+                                      </Space>
+                                    ) : '无'}
+                                  </Descriptions.Item>
+                                  <Descriptions.Item label="代养人补充说明" span={2}>
+                                    {handover.actual_notes || '无'}
+                                  </Descriptions.Item>
+                                  {handover.discrepancies && handover.discrepancies.length > 0 && (
+                                    <Descriptions.Item label="差异项" span={2}>
+                                      <Space direction="vertical">
+                                        {handover.discrepancies.map((d, idx) => (
+                                          <Alert
+                                            key={idx}
+                                            type="warning"
+                                            showIcon
+                                            message={`${d.field}: ${d.description}`}
+                                          />
+                                        ))}
+                                      </Space>
+                                    </Descriptions.Item>
+                                  )}
+                                </>
+                              )}
+                              <Descriptions.Item label="确认状态" span={2}>
+                                <Space>
+                                  <Tag color={handover.owner_confirmed ? 'green' : 'default'}>
+                                    {handover.owner_confirmed ? '✓ 主人已确认' : '主人待确认'}
+                                  </Tag>
+                                  <Tag color={handover.caregiver_confirmed ? 'green' : 'default'}>
+                                    {handover.caregiver_confirmed ? '✓ 代养人已确认' : '代养人待确认'}
+                                  </Tag>
+                                </Space>
+                              </Descriptions.Item>
+                            </Descriptions>
+
+                            <Space wrap>
+                              {handover.status === 'draft' && isOwner && (
+                                <>
+                                  <Button type="primary" icon={<EditOutlined />} onClick={() => openEditHandover(handover)}>
+                                    编辑
+                                  </Button>
+                                  <Button onClick={() => saveHandover(true)}>
+                                    提交待确认
+                                  </Button>
+                                </>
+                              )}
+                              {handover.status === 'pending_caregiver_confirm' && isCaregiver && (
+                                <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => openCaregiverConfirm(handover)}>
+                                  确认交接
+                                </Button>
+                              )}
+                              {handover.status === 'pending_caregiver_confirm' && isOwner && handover.is_editable && (
+                                <Button icon={<EditOutlined />} onClick={() => openEditHandover(handover)}>
+                                  修改
+                                </Button>
+                              )}
+                              {handover.status === 'pending_owner_confirm' && isOwner && (
+                                <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => handleOwnerFinalConfirm(handover)}>
+                                  最终确认交接
+                                </Button>
+                              )}
+                              {handover.related_dispute && (
+                                <Tag color="red" icon={<WarningOutlined />}>
+                                  已关联争议 #{handover.related_dispute}
+                                </Tag>
+                              )}
+                              {handover.status === 'confirmed' && (
+                                <Tag color="green" icon={<CheckCircleOutlined />}>
+                                  交接已完成，不可编辑
+                                </Tag>
+                              )}
+                            </Space>
+                          </Card>
+                        </List.Item>
+                      );
+                    }}
+                  />
+                )}
+              </TabPane>
+
               <TabPane tab={<span><CheckCircleOutlined />每日服务记录</span>} key="records">
                 {dailyRecords.length === 0 ? (
                   <Empty description="暂无服务记录" />
@@ -1105,6 +1485,238 @@ const Orders: React.FC = () => {
                 )}
               </TabPane>
             </Tabs>
+          </div>
+        )}
+      </Modal>
+
+      {/* 交接清单 Modal */}
+      <Modal
+        title={editingHandover ? '✏️ 编辑交接清单' : '📋 发起交接清单'}
+        open={handoverModal}
+        onCancel={() => setHandoverModal(false)}
+        footer={[
+          <Button key="cancel" onClick={() => setHandoverModal(false)}>
+            取消
+          </Button>,
+          <Button key="save" onClick={() => saveHandover(false)}>
+            保存草稿
+          </Button>,
+          <Button key="submit" type="primary" onClick={() => saveHandover(true)}>
+            提交待确认
+          </Button>,
+        ]}
+        width={700}
+      >
+        <Form form={handoverForm} layout="vertical">
+          <Form.Item name="stage" label="交接阶段" rules={[{ required: true }]}>
+            <Select>
+              <Option value="start">开始服务交接</Option>
+              <Option value="end">结束服务交接</Option>
+            </Select>
+          </Form.Item>
+
+          <Divider orientation="left">📦 宠物随身物品</Divider>
+          {handoverItems.map((item, idx) => (
+            <Row key={idx} gutter={8} style={{ marginBottom: 8 }}>
+              <Col span={10}>
+                <Input
+                  placeholder="物品名称"
+                  value={item.name}
+                  onChange={(e) => updateHandoverItem(idx, 'name', e.target.value)}
+                />
+              </Col>
+              <Col span={10}>
+                <Input
+                  placeholder="数量/规格"
+                  value={item.quantity}
+                  onChange={(e) => updateHandoverItem(idx, 'quantity', e.target.value)}
+                />
+              </Col>
+              <Col span={4}>
+                <Button
+                  type="text"
+                  danger
+                  icon={<MinusCircleOutlined />}
+                  onClick={() => removeHandoverItem(idx)}
+                />
+              </Col>
+            </Row>
+          ))}
+          <Button icon={<PlusOutlined />} onClick={addHandoverItem} style={{ marginBottom: 16 }}>
+            添加物品
+          </Button>
+
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="feeding_instructions" label="🍚 喂养/用药说明">
+                <TextArea rows={3} placeholder="喂食时间、食物种类、用药剂量等..." />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="health_notes" label="⚠️ 健康异常备注">
+                <TextArea rows={3} placeholder="如有健康异常请填写，将自动触发争议提示..." />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="location" label="📍 接送地点">
+                <Input placeholder="请输入详细接送地址" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item name="expected_time" label="⏰ 预计交接时间">
+                <DatePicker showTime style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Divider orientation="left">📷 交接照片</Divider>
+          {handoverPhotos.map((photo, idx) => (
+            <Row key={idx} gutter={8} style={{ marginBottom: 8 }}>
+              <Col span={20}>
+                <Input
+                  placeholder="照片 URL"
+                  value={photo}
+                  onChange={(e) => updatePhotoUrl(idx, e.target.value)}
+                />
+              </Col>
+              <Col span={4}>
+                <Button
+                  type="text"
+                  danger
+                  icon={<MinusCircleOutlined />}
+                  onClick={() => removePhotoUrl(idx)}
+                />
+              </Col>
+            </Row>
+          ))}
+          <Button icon={<PlusOutlined />} onClick={addPhotoUrl}>
+            添加照片链接
+          </Button>
+        </Form>
+      </Modal>
+
+      {/* 代养人确认交接 Modal */}
+      <Modal
+        title="🤝 确认交接"
+        open={caregiverConfirmModal}
+        onCancel={() => setCaregiverConfirmModal(false)}
+        onOk={submitCaregiverConfirm}
+        okText="确认交接"
+        cancelText="取消"
+        width={700}
+      >
+        {confirmingHandover && (
+          <div>
+            <Alert
+              message="请仔细核对主人提交的交接清单，如存在差异请标记"
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+            />
+
+            <Descriptions column={1} size="small" bordered style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="主人填写的物品">
+                {confirmingHandover.items && confirmingHandover.items.length > 0 ? (
+                  <Space wrap>
+                    {confirmingHandover.items.map((it, idx) => (
+                      <Tag key={idx} color="blue">{it.name} × {it.quantity}</Tag>
+                    ))}
+                  </Space>
+                ) : '无'}
+              </Descriptions.Item>
+              <Descriptions.Item label="喂养/用药说明">
+                {confirmingHandover.feeding_instructions || '无'}
+              </Descriptions.Item>
+              <Descriptions.Item label="健康异常备注">
+                {confirmingHandover.health_notes ? (
+                  <span style={{ color: '#ef4444' }}>{confirmingHandover.health_notes}</span>
+                ) : '无'}
+              </Descriptions.Item>
+              <Descriptions.Item label="接送地点">
+                {confirmingHandover.location || '未填写'}
+              </Descriptions.Item>
+            </Descriptions>
+
+            <Form form={caregiverConfirmForm} layout="vertical">
+              <Divider orientation="left">📦 实际接收物品</Divider>
+              {actualItems.map((item, idx) => (
+                <Row key={idx} gutter={8} style={{ marginBottom: 8 }}>
+                  <Col span={10}>
+                    <Input
+                      placeholder="物品名称"
+                      value={item.name}
+                      onChange={(e) => updateActualItem(idx, 'name', e.target.value)}
+                    />
+                  </Col>
+                  <Col span={10}>
+                    <Input
+                      placeholder="数量/规格"
+                      value={item.quantity}
+                      onChange={(e) => updateActualItem(idx, 'quantity', e.target.value)}
+                    />
+                  </Col>
+                  <Col span={4}>
+                    <Button
+                      type="text"
+                      danger
+                      icon={<MinusCircleOutlined />}
+                      onClick={() => removeActualItem(idx)}
+                    />
+                  </Col>
+                </Row>
+              ))}
+              <Button icon={<PlusOutlined />} onClick={addActualItem} style={{ marginBottom: 16 }}>
+                添加物品
+              </Button>
+
+              <Form.Item name="actual_notes" label="📝 代养人补充说明">
+                <TextArea rows={2} placeholder="其他需要说明的实际接收情况..." />
+              </Form.Item>
+
+              <Form.Item name="has_discrepancies" label="⚠️ 是否存在差异或健康异常" valuePropName="checked">
+                <Switch checkedChildren="是" unCheckedChildren="否" />
+              </Form.Item>
+
+              <Divider orientation="left">❌ 差异项（如有）</Divider>
+              {discrepancies.map((d, idx) => (
+                <Row key={idx} gutter={8} style={{ marginBottom: 8 }}>
+                  <Col span={8}>
+                    <Input
+                      placeholder="差异字段（物品/健康/其他）"
+                      value={d.field}
+                      onChange={(e) => updateDiscrepancy(idx, 'field', e.target.value)}
+                    />
+                  </Col>
+                  <Col span={12}>
+                    <Input
+                      placeholder="差异描述"
+                      value={d.description}
+                      onChange={(e) => updateDiscrepancy(idx, 'description', e.target.value)}
+                    />
+                  </Col>
+                  <Col span={4}>
+                    <Button
+                      type="text"
+                      danger
+                      icon={<MinusCircleOutlined />}
+                      onClick={() => removeDiscrepancy(idx)}
+                    />
+                  </Col>
+                </Row>
+              ))}
+              <Button icon={<PlusOutlined />} onClick={addDiscrepancy}>
+                添加差异项
+              </Button>
+              <Alert
+                message="如存在差异或健康异常，系统将自动创建争议进行协商"
+                type="warning"
+                showIcon
+                style={{ marginTop: 16 }}
+              />
+            </Form>
           </div>
         )}
       </Modal>
