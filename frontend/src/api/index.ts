@@ -7,6 +7,7 @@ import type {
 const api = axios.create({
   baseURL: '/api',
   timeout: 10000,
+  withCredentials: true,
 });
 
 export const userApi = {

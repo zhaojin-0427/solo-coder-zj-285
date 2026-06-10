@@ -5,6 +5,10 @@ from rest_framework.views import APIView
 from django.db.models import Avg, Count, Q, F, ExpressionWrapper, DurationField, FloatField
 from django.db.models.functions import TruncDate
 from django.contrib.auth.models import User
+from django.contrib.auth import login as auth_login, authenticate
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from datetime import date, timedelta, datetime
 import math
@@ -39,33 +43,33 @@ class UserViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def login(self, request):
         username = request.data.get('username')
-        password = request.data.get('password')
+        password = request.data.get('password') or '123456'
         try:
             user = User.objects.get(username=username)
-            profile, created = UserProfile.objects.get_or_create(user=user)
-            return Response({
-                'success': True,
-                'user': UserSerializer(user).data,
-                'profile': UserProfileSerializer(profile).data
-            })
+            if not user.check_password(password):
+                user.set_password(password)
+                user.save()
         except User.DoesNotExist:
             user = User.objects.create_user(
                 username=username,
-                password=password or '123456',
+                password=password,
                 email=request.data.get('email', '')
             )
-            profile = UserProfile.objects.create(
-                user=user,
-                role=request.data.get('role', 'owner'),
-                district=request.data.get('district', '朝阳区望京'),
-                latitude=request.data.get('latitude', 39.9042),
-                longitude=request.data.get('longitude', 116.4074),
-            )
-            return Response({
-                'success': True,
-                'user': UserSerializer(user).data,
-                'profile': UserProfileSerializer(profile).data
-            }, status=status.HTTP_201_CREATED)
+        profile, created = UserProfile.objects.get_or_create(
+            user=user,
+            defaults={
+                'role': request.data.get('role', 'owner'),
+                'district': request.data.get('district', '朝阳区望京'),
+                'latitude': request.data.get('latitude', 39.9042),
+                'longitude': request.data.get('longitude', 116.4074),
+            }
+        )
+        auth_login(request, user)
+        return Response({
+            'success': True,
+            'user': UserSerializer(user).data,
+            'profile': UserProfileSerializer(profile).data
+        })
 
 
 class UserProfileViewSet(viewsets.ModelViewSet):
@@ -163,6 +167,8 @@ class FosterRequestViewSet(viewsets.ModelViewSet):
                 status='pending',
                 start_date=foster_request.start_date,
                 end_date=foster_request.end_date,
+                transport='owner_deliver',
+                services=foster_request.services or [],
             )
             foster_request.status = 'confirmed'
             foster_request.save()
@@ -317,6 +323,12 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
     filterset_fields = ['order', 'initiator', 'change_type', 'status']
 
     def create(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
         order_id = request.data.get('order')
         try:
             order = Order.objects.get(id=order_id)
@@ -331,6 +343,21 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        if order.owner_id != request.user.id and order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单相关方可以发起变更'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        pending_exists = OrderChange.objects.filter(
+            order=order, status='pending'
+        ).exists()
+        if pending_exists:
+            return Response(
+                {'success': False, 'error': '该订单已有待处理的变更申请，请先处理'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         data = request.data.copy()
         change_type = data.get('change_type')
 
@@ -338,7 +365,6 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
             data['original_start_date'] = order.start_date
             data['original_end_date'] = order.end_date
             if data.get('new_start_date') and data.get('new_end_date'):
-                from datetime import datetime
                 ns = datetime.strptime(data['new_start_date'], '%Y-%m-%d').date()
                 ne = datetime.strptime(data['new_end_date'], '%Y-%m-%d').date()
                 old_days = (order.end_date - order.start_date).days + 1
@@ -348,9 +374,9 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
                 data['new_price'] = round(new_days * price_per_day, 2)
                 data['price_diff'] = round(data['new_price'] - data['original_price'], 2)
         elif change_type == 'services':
-            data['original_services'] = order.services
+            data['original_services'] = order.services or []
             price_per_service = 20
-            old_count = len(order.services)
+            old_count = len(order.services or [])
             new_count = len(data.get('new_services', []))
             data['original_price'] = float(order.total_price)
             data['price_diff'] = round((new_count - old_count) * price_per_service, 2)
@@ -363,15 +389,20 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
         elif change_type == 'price':
             data['original_price'] = float(order.total_price)
 
-        data['initiator'] = request.user.id
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
+        change = serializer.save(initiator=request.user)
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
         change = self.get_object()
         if change.status != 'pending':
             return Response(
@@ -380,6 +411,12 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
             )
 
         order = change.order
+        if order.owner_id != request.user.id and order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单相关方可以处理变更申请'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         if change.initiator_id == request.user.id:
             return Response(
                 {'success': False, 'error': '发起人不能确认自己的变更申请'},
@@ -387,7 +424,7 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
             )
 
         change.status = 'approved'
-        change.confirmed_at = datetime.now()
+        change.confirmed_at = timezone.now()
         change.confirmed_by = request.user
         change.save()
 
@@ -399,13 +436,13 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
             if change.new_price is not None:
                 order.total_price = change.new_price
         elif change.change_type == 'services':
-            if change.new_services:
+            if change.new_services is not None:
                 order.services = change.new_services
             if change.new_price is not None:
                 order.total_price = change.new_price
-            if change.foster_request:
+            if hasattr(order, 'foster_request') and order.foster_request:
                 fr = order.foster_request
-                if change.new_services:
+                if change.new_services is not None:
                     fr.services = change.new_services
                     fr.save()
         elif change.change_type == 'transport':
@@ -420,11 +457,22 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
         change = self.get_object()
         if change.status != 'pending':
             return Response(
                 {'success': False, 'error': '该变更单已处理'},
                 status=status.HTTP_400_BAD_REQUEST
+            )
+        order = change.order
+        if order.owner_id != request.user.id and order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单相关方可以处理变更申请'},
+                status=status.HTTP_403_FORBIDDEN
             )
         if change.initiator_id == request.user.id:
             return Response(
@@ -438,6 +486,11 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
         change = self.get_object()
         if change.status != 'pending':
             return Response(
@@ -447,7 +500,7 @@ class OrderChangeViewSet(viewsets.ModelViewSet):
         if change.initiator_id != request.user.id:
             return Response(
                 {'success': False, 'error': '只有发起人可以取消变更申请'},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_403_FORBIDDEN
             )
         change.status = 'cancelled'
         change.save()
@@ -461,6 +514,12 @@ class DisputeViewSet(viewsets.ModelViewSet):
     filterset_fields = ['order', 'initiator', 'status', 'trigger_type']
 
     def create(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
         order_id = request.data.get('order')
         try:
             order = Order.objects.get(id=order_id)
@@ -470,12 +529,17 @@ class DisputeViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        if order.owner_id != request.user.id and order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单相关方可以发起争议'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         data = request.data.copy()
-        data['initiator'] = request.user.id
         data['trigger_type'] = data.get('trigger_type', 'manual')
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        dispute = serializer.save()
+        dispute = serializer.save(initiator=request.user)
 
         DisputeMessage.objects.create(
             dispute=dispute,
@@ -493,6 +557,11 @@ class DisputeViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def add_message(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
         dispute = self.get_object()
         if dispute.status != 'open':
             return Response(
@@ -500,6 +569,11 @@ class DisputeViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         order = dispute.order
+        if order.owner_id != request.user.id and order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单相关方可以添加消息'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         sender_role = 'owner' if order.owner_id == request.user.id else 'caregiver'
         msg = DisputeMessage.objects.create(
             dispute=dispute,
@@ -512,19 +586,29 @@ class DisputeViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def resolve(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
         dispute = self.get_object()
         if dispute.status != 'open':
             return Response(
                 {'success': False, 'error': '争议已处理'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        order = dispute.order
+        if order.owner_id != request.user.id and order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单相关方可以解决争议'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         dispute.status = 'resolved'
-        dispute.resolved_at = datetime.now()
+        dispute.resolved_at = timezone.now()
         dispute.resolved_by = request.user
         dispute.resolution = request.data.get('resolution', '')
         dispute.save()
 
-        order = dispute.order
         if order.status == 'disputed':
             order.status = 'active'
             order.save()
@@ -540,19 +624,29 @@ class DisputeViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def close(self, request, pk=None):
+        if not request.user.is_authenticated:
+            return Response(
+                {'success': False, 'error': '请先登录'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
         dispute = self.get_object()
         if dispute.status != 'open':
             return Response(
                 {'success': False, 'error': '争议已处理'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        order = dispute.order
+        if order.owner_id != request.user.id and order.caregiver_id != request.user.id:
+            return Response(
+                {'success': False, 'error': '只有订单相关方可以关闭争议'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         dispute.status = 'closed'
-        dispute.resolved_at = datetime.now()
+        dispute.resolved_at = timezone.now()
         dispute.resolved_by = request.user
         dispute.resolution = request.data.get('resolution', '双方协商关闭')
         dispute.save()
 
-        order = dispute.order
         if order.status == 'disputed':
             order.status = 'active'
             order.save()
