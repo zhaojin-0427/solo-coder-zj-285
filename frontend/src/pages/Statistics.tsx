@@ -1,17 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Card, Row, Col, Statistic, Progress, Empty, Spin, Tag, Avatar, List,
+  Card, Row, Col, Statistic, Progress, Empty, Spin, Tag, Avatar, List, Select, Space,
 } from 'antd';
 import {
   TeamOutlined, HeartOutlined, ShoppingOutlined,
   WarningOutlined, CheckCircleOutlined, StarOutlined,
-  EnvironmentOutlined,
+  EnvironmentOutlined, SyncOutlined, SolutionOutlined,
+  ClockCircleOutlined, CarryOutOutlined,
 } from '@ant-design/icons';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, Legend,
 } from 'recharts';
-import { statsApi } from '../api';
+import { statsApi, profileApi } from '../api';
 import type { Statistics } from '../types';
 
 const COLORS = ['#52c41a', '#1890ff', '#faad14', '#722ed1', '#eb2f96', '#13c2c2', '#fa541c'];
@@ -19,18 +20,42 @@ const COLORS = ['#52c41a', '#1890ff', '#faad14', '#722ed1', '#eb2f96', '#13c2c2'
 const StatisticsPage: React.FC = () => {
   const [stats, setStats] = useState<Statistics | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectedDistrict, setSelectedDistrict] = useState<string | undefined>(undefined);
+  const [districts, setDistricts] = useState<string[]>([]);
 
   useEffect(() => {
     loadStats();
+    loadDistricts();
   }, []);
 
+  useEffect(() => {
+    loadStats();
+  }, [selectedDistrict]);
+
   const loadStats = async () => {
+    setLoading(true);
     try {
-      const res = await statsApi.get();
+      const params: any = {};
+      if (selectedDistrict) {
+        params.district = selectedDistrict;
+      }
+      const res = await statsApi.get(params);
       setStats(res.data);
     } finally {
       setLoading(false);
     }
+  };
+
+  const loadDistricts = async () => {
+    try {
+      const res = await profileApi.list();
+      const profiles = Array.isArray(res.data) ? res.data : (res.data as any).results || [];
+      const districtSet = new Set<string>();
+      profiles.forEach((p: any) => {
+        if (p.district) districtSet.add(p.district);
+      });
+      setDistricts(Array.from(districtSet));
+    } catch {}
   };
 
   if (loading) {
@@ -45,13 +70,30 @@ const StatisticsPage: React.FC = () => {
     return <Empty description="暂无统计数据" />;
   }
 
-  const { overview, district_activity, district_orders, top_caregivers, abnormal_by_type, order_trend, avg_reviews } = stats;
+  const { overview, district_activity, district_orders, top_caregivers, abnormal_by_type, order_trend, avg_reviews, current_district } = stats;
 
   return (
     <div className="page-container">
       <div className="page-header">
         <div className="page-title">📊 数据统计</div>
+        <Space>
+          <span style={{ color: '#6b7280' }}>按片区查看：</span>
+          <Select
+            style={{ width: 200 }}
+            placeholder="选择片区（全部）"
+            allowClear
+            value={selectedDistrict}
+            onChange={(v) => setSelectedDistrict(v)}
+            options={districts.map(d => ({ value: d, label: d }))}
+          />
+        </Space>
       </div>
+
+      {current_district && (
+        <Tag color="blue" style={{ marginBottom: 16 }}>
+          <EnvironmentOutlined /> 当前筛选片区：{current_district}
+        </Tag>
+      )}
 
       <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
         <Col xs={24} sm={12} lg={6}>
@@ -102,6 +144,66 @@ const StatisticsPage: React.FC = () => {
                 <CheckCircleOutlined style={{ color: '#52c41a' }} /> 完成率 {overview.completion_rate}%
                 （{overview.completed_orders}/{overview.total_orders}）
               </div>
+            </div>
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>变更成功率</span>}
+              value={overview.change_success_rate}
+              suffix="%"
+              prefix={<SyncOutlined style={{ color: '#13c2c2' }} />}
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              <CheckCircleOutlined style={{ color: '#52c41a' }} /> 成功 {overview.approved_changes || 0} / 共 {overview.total_changes || 0} 单
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>争议率</span>}
+              value={overview.dispute_rate}
+              suffix="%"
+              prefix={<SolutionOutlined style={{ color: '#fa541c' }} />}
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              <WarningOutlined style={{ color: '#fa541c' }} /> 争议订单 {overview.disputed_orders || 0} / 共 {overview.total_orders || 0} 单
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>平均协商时长</span>}
+              value={overview.avg_negotiation_hours}
+              suffix="小时"
+              prefix={<ClockCircleOutlined style={{ color: '#722ed1' }} />}
+              valueStyle={{ color: '#1f2937' }}
+              precision={1}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              从争议发起到解决的平均耗时
+            </div>
+          </Card>
+        </Col>
+        <Col xs={24} sm={12} lg={6}>
+          <Card className="stat-card">
+            <Statistic
+              title={<span style={{ color: '#6b7280' }}>异常升级后完结率</span>}
+              value={overview.escalation_resolution_rate}
+              suffix="%"
+              prefix={<CarryOutOutlined style={{ color: '#eb2f96' }} />}
+              valueStyle={{ color: '#1f2937' }}
+            />
+            <div style={{ marginTop: 8, fontSize: 12, color: '#6b7280' }}>
+              <CheckCircleOutlined style={{ color: '#52c41a' }} /> 已解决 {overview.escalated_resolved || 0} / 升级 {overview.escalated_count || 0} 次
             </div>
           </Card>
         </Col>

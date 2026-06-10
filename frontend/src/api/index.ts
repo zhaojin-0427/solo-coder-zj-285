@@ -1,7 +1,7 @@
 import axios from 'axios';
 import type {
   User, UserProfile, CaregiverProfile, Pet, FosterRequest,
-  Order, DailyRecord, Review, Statistics
+  Order, DailyRecord, Review, Statistics, OrderChange, Dispute, DisputeMessage
 } from '../types';
 
 const api = axios.create({
@@ -68,6 +68,28 @@ export const reviewApi = {
   create: (data: any) => api.post<Review>('/reviews/', data),
 };
 
+export const orderChangeApi = {
+  list: (params?: any) => api.get<OrderChange[]>('/order-changes/', { params }),
+  get: (id: number) => api.get<OrderChange>(`/order-changes/${id}/`),
+  create: (data: any) => api.post<OrderChange>('/order-changes/', data),
+  approve: (id: number) => api.post(`/order-changes/${id}/approve/`),
+  reject: (id: number, rejectReason: string) =>
+    api.post(`/order-changes/${id}/reject/`, { reject_reason: rejectReason }),
+  cancel: (id: number) => api.post(`/order-changes/${id}/cancel/`),
+};
+
+export const disputeApi = {
+  list: (params?: any) => api.get<Dispute[]>('/disputes/', { params }),
+  get: (id: number) => api.get<Dispute>(`/disputes/${id}/`),
+  create: (data: any) => api.post<Dispute>('/disputes/', data),
+  addMessage: (id: number, content: string) =>
+    api.post(`/disputes/${id}/add_message/`, { content }),
+  resolve: (id: number, resolution: string) =>
+    api.post(`/disputes/${id}/resolve/`, { resolution }),
+  close: (id: number, resolution?: string) =>
+    api.post(`/disputes/${id}/close/`, { resolution }),
+};
+
 export const statsApi = {
-  get: () => api.get<Statistics>('/statistics/'),
+  get: (params?: any) => api.get<Statistics>('/statistics/', { params }),
 };

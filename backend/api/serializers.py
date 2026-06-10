@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import (
     UserProfile, CaregiverProfile, Pet, FosterRequest,
-    Order, DailyRecord, Review
+    Order, DailyRecord, Review, OrderChange, Dispute, DisputeMessage
 )
 
 
@@ -59,10 +59,15 @@ class OrderSerializer(serializers.ModelSerializer):
     owner_name = serializers.CharField(source='owner.username', read_only=True)
     caregiver_name = serializers.CharField(source='caregiver.username', read_only=True)
     foster_request_info = FosterRequestSerializer(source='foster_request', read_only=True)
+    transport_display = serializers.CharField(source='get_transport_display', read_only=True)
+    has_open_dispute = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
         fields = '__all__'
+
+    def get_has_open_dispute(self, obj):
+        return obj.disputes.filter(status='open').exists()
 
 
 class DailyRecordSerializer(serializers.ModelSerializer):
@@ -80,3 +85,41 @@ class ReviewSerializer(serializers.ModelSerializer):
     class Meta:
         model = Review
         fields = '__all__'
+
+
+class OrderChangeSerializer(serializers.ModelSerializer):
+    initiator_name = serializers.CharField(source='initiator.username', read_only=True)
+    confirmed_by_name = serializers.CharField(source='confirmed_by.username', read_only=True, allow_null=True)
+    change_type_display = serializers.CharField(source='get_change_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    original_transport_display = serializers.CharField(source='get_original_transport_display', read_only=True, allow_null=True)
+    new_transport_display = serializers.CharField(source='get_new_transport_display', read_only=True, allow_null=True)
+
+    class Meta:
+        model = OrderChange
+        fields = '__all__'
+        read_only_fields = ['initiator', 'status', 'confirmed_at', 'confirmed_by']
+
+
+class DisputeMessageSerializer(serializers.ModelSerializer):
+    sender_name = serializers.CharField(source='sender.username', read_only=True, allow_null=True)
+    sender_role_display = serializers.CharField(source='get_sender_role_display', read_only=True)
+
+    class Meta:
+        model = DisputeMessage
+        fields = '__all__'
+
+
+class DisputeSerializer(serializers.ModelSerializer):
+    initiator_name = serializers.CharField(source='initiator.username', read_only=True)
+    resolved_by_name = serializers.CharField(source='resolved_by.username', read_only=True, allow_null=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    trigger_type_display = serializers.CharField(source='get_trigger_type_display', read_only=True)
+    messages = DisputeMessageSerializer(many=True, read_only=True)
+    order_info = OrderSerializer(source='order', read_only=True)
+
+    class Meta:
+        model = Dispute
+        fields = '__all__'
+        read_only_fields = ['initiator', 'status', 'opened_at', 'escalation_alert_sent']
+

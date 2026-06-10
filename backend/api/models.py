@@ -124,6 +124,11 @@ class Order(models.Model):
         ('cancelled', '已取消'),
         ('disputed', '有争议'),
     ]
+    TRANSPORT_CHOICES = [
+        ('caregiver_pickup', '代养人上门接'),
+        ('owner_deliver', '主人送上门'),
+        ('meetup', '约定地点交接'),
+    ]
 
     foster_request = models.OneToOneField(
         FosterRequest, on_delete=models.CASCADE, related_name='order'
@@ -134,6 +139,11 @@ class Order(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     start_date = models.DateField()
     end_date = models.DateField()
+    transport = models.CharField(
+        max_length=30, choices=TRANSPORT_CHOICES, default='owner_deliver',
+        help_text='接送方式'
+    )
+    services = models.JSONField(default=list, help_text='服务项列表')
     owner_reviewed = models.BooleanField(default=False)
     caregiver_reviewed = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -180,3 +190,107 @@ class Review(models.Model):
 
     def __str__(self):
         return f'{self.reviewer.username} 评价 {self.reviewee.username} ({self.rating}星)'
+
+
+class OrderChange(models.Model):
+    TYPE_CHOICES = [
+        ('reschedule', '改期'),
+        ('services', '加减服务项'),
+        ('transport', '修改接送方式'),
+        ('price', '补差价/退款'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', '待确认'),
+        ('approved', '已确认'),
+        ('rejected', '已拒绝'),
+        ('cancelled', '已取消'),
+    ]
+    TRANSPORT_CHOICES = [
+        ('caregiver_pickup', '代养人上门接'),
+        ('owner_deliver', '主人送上门'),
+        ('meetup', '约定地点交接'),
+    ]
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='changes')
+    initiator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='changes_initiated')
+    change_type = models.CharField(max_length=30, choices=TYPE_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    original_start_date = models.DateField(null=True, blank=True)
+    original_end_date = models.DateField(null=True, blank=True)
+    new_start_date = models.DateField(null=True, blank=True)
+    new_end_date = models.DateField(null=True, blank=True)
+    original_services = models.JSONField(default=list, blank=True)
+    new_services = models.JSONField(default=list, blank=True)
+    original_transport = models.CharField(max_length=30, choices=TRANSPORT_CHOICES, blank=True, null=True)
+    new_transport = models.CharField(max_length=30, choices=TRANSPORT_CHOICES, blank=True, null=True)
+    original_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    new_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    price_diff = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text='正数为补差价，负数为退款')
+    reason = models.TextField(help_text='变更原因')
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    confirmed_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='changes_confirmed'
+    )
+    reject_reason = models.TextField(blank=True, help_text='拒绝原因')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'变更单 #{self.id} - {self.get_change_type_display()} ({self.get_status_display()})'
+
+
+class Dispute(models.Model):
+    STATUS_CHOICES = [
+        ('open', '协商中'),
+        ('resolved', '已解决'),
+        ('closed', '已关闭'),
+    ]
+    TRIGGER_CHOICES = [
+        ('abnormal_behavior', '连续异常行为'),
+        ('feeding_missing', '连续喂养缺失'),
+        ('photo_missing', '连续照片缺失'),
+        ('manual', '用户手动发起'),
+    ]
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='disputes')
+    initiator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='disputes_initiated')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='open')
+    trigger_type = models.CharField(max_length=30, choices=TRIGGER_CHOICES)
+    title = models.CharField(max_length=200)
+    description = models.TextField(help_text='争议描述')
+    opened_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolution = models.TextField(blank=True, help_text='解决方案')
+    resolved_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='disputes_resolved'
+    )
+    escalation_alert_sent = models.BooleanField(default=False, help_text='是否已发送升级提醒')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'争议 #{self.id} - 订单{self.order.id} ({self.get_status_display()})'
+
+
+class DisputeMessage(models.Model):
+    SENDER_ROLE_CHOICES = [
+        ('owner', '宠物主人'),
+        ('caregiver', '代养人'),
+        ('system', '系统'),
+    ]
+
+    dispute = models.ForeignKey(Dispute, on_delete=models.CASCADE, related_name='messages')
+    sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name='dispute_messages', null=True, blank=True)
+    sender_role = models.CharField(max_length=20, choices=SENDER_ROLE_CHOICES)
+    content = models.TextField()
+    is_system = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f'消息 #{self.id} - 争议{self.dispute.id}'
+

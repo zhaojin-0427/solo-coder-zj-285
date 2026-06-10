@@ -11,6 +11,8 @@ router.register(r'requests', views.FosterRequestViewSet)
 router.register(r'orders', views.OrderViewSet)
 router.register(r'daily-records', views.DailyRecordViewSet)
 router.register(r'reviews', views.ReviewViewSet)
+router.register(r'order-changes', views.OrderChangeViewSet)
+router.register(r'disputes', views.DisputeViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),

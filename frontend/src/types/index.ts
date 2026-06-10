@@ -96,8 +96,78 @@ export interface Order {
   status: 'pending' | 'active' | 'completed' | 'cancelled' | 'disputed';
   start_date: string;
   end_date: string;
+  transport: 'caregiver_pickup' | 'owner_deliver' | 'meetup';
+  transport_display?: string;
+  services: string[];
+  has_open_dispute?: boolean;
   owner_reviewed: boolean;
   caregiver_reviewed: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrderChange {
+  id: number;
+  order: number;
+  initiator: number;
+  initiator_name: string;
+  change_type: 'reschedule' | 'services' | 'transport' | 'price';
+  change_type_display: string;
+  status: 'pending' | 'approved' | 'rejected' | 'cancelled';
+  status_display: string;
+  original_start_date?: string;
+  original_end_date?: string;
+  new_start_date?: string;
+  new_end_date?: string;
+  original_services?: string[];
+  new_services?: string[];
+  original_transport?: 'caregiver_pickup' | 'owner_deliver' | 'meetup';
+  original_transport_display?: string;
+  new_transport?: 'caregiver_pickup' | 'owner_deliver' | 'meetup';
+  new_transport_display?: string;
+  original_price?: number;
+  new_price?: number;
+  price_diff: number;
+  reason: string;
+  confirmed_at?: string;
+  confirmed_by?: number;
+  confirmed_by_name?: string;
+  reject_reason?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DisputeMessage {
+  id: number;
+  dispute: number;
+  sender?: number;
+  sender_name?: string;
+  sender_role: 'owner' | 'caregiver' | 'system';
+  sender_role_display: string;
+  content: string;
+  is_system: boolean;
+  created_at: string;
+}
+
+export interface Dispute {
+  id: number;
+  order: number;
+  order_info?: Order;
+  initiator: number;
+  initiator_name: string;
+  status: 'open' | 'resolved' | 'closed';
+  status_display: string;
+  trigger_type: 'abnormal_behavior' | 'feeding_missing' | 'photo_missing' | 'manual';
+  trigger_type_display: string;
+  title: string;
+  description: string;
+  opened_at: string;
+  resolved_at?: string;
+  resolution?: string;
+  resolved_by?: number;
+  resolved_by_name?: string;
+  escalation_alert_sent: boolean;
+  messages?: DisputeMessage[];
   created_at: string;
   updated_at: string;
 }
@@ -143,6 +213,15 @@ export interface Statistics {
     abnormal_rate: number;
     abnormal_records: number;
     total_records: number;
+    change_success_rate: number;
+    total_changes: number;
+    approved_changes: number;
+    dispute_rate: number;
+    disputed_orders: number;
+    avg_negotiation_hours: number;
+    escalation_resolution_rate: number;
+    escalated_count: number;
+    escalated_resolved: number;
   };
   district_activity: { district: string; count: number }[];
   district_orders: { district: string; total: number; completed: number }[];
@@ -157,4 +236,5 @@ export interface Statistics {
   abnormal_by_type: { order_pet_type: string; count: number }[];
   order_trend: { date: string; count: number }[];
   avg_reviews: { role: string; avg_rating: number; count: number }[];
+  current_district?: string;
 }
