@@ -62,7 +62,11 @@ const Orders: React.FC = () => {
         params.status = activeTab;
       }
       const res = await orderApi.list(params);
-      setOrders(Array.isArray(res.data) ? res.data : (res.data as any).results || []);
+      const allOrders = Array.isArray(res.data) ? res.data : (res.data as any).results || [];
+      const myOrders = allOrders.filter(
+        (o: Order) => o.owner === user?.id || o.caregiver === user?.id
+      );
+      setOrders(myOrders);
     } finally {
       setLoading(false);
     }

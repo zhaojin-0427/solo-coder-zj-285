@@ -44,10 +44,8 @@ const RequestForm: React.FC = () => {
   const loadPets = async () => {
     try {
       const res = await petApi.list({ owner: user?.id });
-      setPets(Array.isArray(res.data) ? res.data : (res.data as any).results || []);
-      if (pets.length === 0) {
-        message.warning('请先添加宠物档案');
-      }
+      const petList = Array.isArray(res.data) ? res.data : (res.data as any).results || [];
+      setPets(petList);
     } catch {}
   };
 
@@ -127,10 +125,21 @@ const RequestForm: React.FC = () => {
   };
 
   const handleJustCreate = async () => {
-    const req = await handleCreateRequest();
-    if (req) {
-      message.success('需求已发布，等待代养人接单');
-      navigate('/orders');
+    try {
+      await form.validateFields();
+      const req = await handleCreateRequest();
+      if (req) {
+        message.success('需求已发布，等待代养人接单');
+        navigate('/orders');
+      } else {
+        message.error('发布失败，请稍后重试');
+      }
+    } catch (e: any) {
+      if (e?.errorFields) {
+        message.warning('请完善表单必填项');
+      } else {
+        message.error(e?.message || '发布失败');
+      }
     }
   };
 

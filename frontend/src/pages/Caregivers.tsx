@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import {
   Card, Row, Col, Input, Select, Slider, Rate, Tag, Avatar, Button,
-  Space, Modal, List, Divider, Empty, Badge, Statistic,
+  Space, Modal, List, Divider, Empty, Badge, Statistic, message,
 } from 'antd';
 import {
   EnvironmentOutlined, StarOutlined, FilterOutlined,
   VideoCameraOutlined, SafetyCertificateOutlined,
 } from '@ant-design/icons';
+import { useNavigate } from 'react-router-dom';
 import { caregiverApi, reviewApi } from '../api';
 import type { CaregiverProfile, Review } from '../types';
 
@@ -17,6 +18,7 @@ const experienceMap: Record<string, string> = {
 };
 
 const Caregivers: React.FC = () => {
+  const navigate = useNavigate();
   const [allCaregivers, setAllCaregivers] = useState<CaregiverProfile[]>([]);
   const [filtered, setFiltered] = useState<CaregiverProfile[]>([]);
   const [loading, setLoading] = useState(false);
@@ -262,7 +264,18 @@ const Caregivers: React.FC = () => {
         onCancel={() => setDetail(null)}
         footer={[
           <Button key="close" onClick={() => setDetail(null)}>关闭</Button>,
-          <Button key="hire" type="primary">选择此代养人</Button>,
+          <Button
+            key="hire"
+            type="primary"
+            onClick={() => {
+              if (detail) {
+                message.success(`已选择代养人「${detail.username}」，请填写寄养需求`);
+                navigate('/requests/new');
+              }
+            }}
+          >
+            选择此代养人
+          </Button>,
         ]}
         width={700}
       >
